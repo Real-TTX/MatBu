@@ -35,6 +35,8 @@ builder.Services.AddSingleton<BackupRetentionService>();
 builder.Services.AddSingleton<RestoreArchiveService>();
 builder.Services.AddSingleton<RestoreExecutionService>();
 builder.Services.AddSingleton<BackupTaskExecutor>();
+builder.Services.AddSingleton<DockerConsistencyService>();
+builder.Services.AddHostedService<ConsistencyRecoveryWorker>();
 builder.Services.AddSingleton<NotificationSettingsStore>();
 builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddHostedService<NotificationDispatcher>();
@@ -255,11 +257,15 @@ app.MapPost("/api/monitoring/token/regenerate", (HttpContext context, Persistent
     return user?.Role == UserRole.Admin ? Results.Ok(new { token = store.RegenerateMonitoringToken() }) : Results.Forbid();
 });
 
-app.MapGet("/api/tasks", (PersistentStore store) =>
+app.MapGet("/api/tasks", (HttpContext context, PersistentStore store) =>
 {
     var data = store.Read();
+    var isAdmin = CurrentUser(context, store)?.Role == UserRole.Admin;
     foreach (var task in data.Tasks)
+    {
         task.LabelIds = data.BackupTaskLabels.Where(item => item.BackupTaskId == task.Id).Select(item => item.JobLabelId).ToList();
+        if (!isAdmin) { task.PreBackupCommand = ""; task.PostBackupCommand = ""; }
+    }
     return Results.Ok(data.Tasks);
 });
 app.MapGet("/api/transfer-jobs", (PersistentStore store) => Results.Ok(store.Read().TransferJobs.OrderByDescending(x => x.UpdateDate)));
@@ -289,8 +295,12 @@ app.MapPost("/api/tasks/{id:long}/run", (long id, PersistentStore store) =>
     });
     return Results.Ok(new { message = "Task wurde zur sofortigen Ausführung eingeplant." });
 });
-app.MapPost("/api/tasks", (BackupTask task, PersistentStore store) =>
+app.MapPost("/api/tasks", (BackupTask task, HttpContext context, PersistentStore store) =>
 {
+    var isAdmin = CurrentUser(context, store)?.Role == UserRole.Admin;
+    if (task.ConsistencyMode != BackupConsistencyMode.None && !isAdmin) return Results.Forbid();
+    var consistencyError = ValidateConsistency(task);
+    if (consistencyError is not null) return Results.BadRequest(new { message = consistencyError });
     if (!BackupSchedule.TryParse(task.Schedule, out _))
         return Results.BadRequest(new { message = "Der Zeitplan ist ungültig." });
     task.Schedule = BackupSchedule.Normalize(task.Schedule);
@@ -322,8 +332,9 @@ app.MapPost("/api/tasks", (BackupTask task, PersistentStore store) =>
     });
     return Results.Created($"/api/tasks/{task.Id}", task);
 });
-app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, PersistentStore store) =>
+app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, HttpContext context, PersistentStore store) =>
 {
+    var isAdmin = CurrentUser(context, store)?.Role == UserRole.Admin;
     if (!BackupSchedule.TryParse(task.Schedule, out _))
         return Results.BadRequest(new { message = "Der Zeitplan ist ungültig." });
     task.Schedule = BackupSchedule.Normalize(task.Schedule);
@@ -337,6 +348,16 @@ app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, PersistentStore st
     var labelIds = task.LabelIds.Distinct().ToList();
     if (labelIds.Any(labelId => !data.JobLabels.Any(label => label.Id == labelId))) return Results.BadRequest(new { message = "Mindestens ein ausgewählter Tag existiert nicht." });
     if (!data.Tasks.Any(x => x.Id == id)) return Results.NotFound();
+    var existingTask = data.Tasks.First(x => x.Id == id);
+    if (!isAdmin)
+    {
+        if (existingTask.ConsistencyMode != task.ConsistencyMode || existingTask.ConsistencyContainerNames != task.ConsistencyContainerNames || existingTask.ConsistencyTimeoutSeconds != task.ConsistencyTimeoutSeconds)
+            return Results.Forbid();
+        task.PreBackupCommand = existingTask.PreBackupCommand;
+        task.PostBackupCommand = existingTask.PostBackupCommand;
+    }
+    var consistencyError = ValidateConsistency(task);
+    if (consistencyError is not null) return Results.BadRequest(new { message = consistencyError });
     var source = data.Objects.FirstOrDefault(x => x.Id == task.SourceId);
     var target = data.Objects.FirstOrDefault(x => x.Id == task.TargetId);
     if (source is null || target is null) return Results.BadRequest(new { message = "Quelle und Ziel müssen vorhandene Objekte sein." });
@@ -347,12 +368,13 @@ app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, PersistentStore st
     {
         var target = data.Tasks.First(x => x.Id == id);
         var now = DateTimeOffset.UtcNow;
-        target.Name = task.Name; target.SourceId = task.SourceId; target.TargetId = task.TargetId; target.Method = task.Method; target.Compression = task.Method == BackupMethod.Full ? task.Compression : BackupCompression.None; target.SourceSelectionJson = task.SourceSelectionJson; target.ChunkSizeMiB = task.ChunkSizeMiB; target.Schedule = task.Schedule; target.Retention = task.Retention; target.MaxRetryAttempts = task.MaxRetryAttempts; target.RetryDelayMinutes = task.RetryDelayMinutes; target.Enabled = task.Enabled; target.NextRunDate = task.Enabled ? BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now) : null; target.UpdateDate = now;
+        target.Name = task.Name; target.SourceId = task.SourceId; target.TargetId = task.TargetId; target.Method = task.Method; target.Compression = task.Method == BackupMethod.Full ? task.Compression : BackupCompression.None; target.SourceSelectionJson = task.SourceSelectionJson; target.ChunkSizeMiB = task.ChunkSizeMiB; target.Schedule = task.Schedule; target.Retention = task.Retention; target.MaxRetryAttempts = task.MaxRetryAttempts; target.RetryDelayMinutes = task.RetryDelayMinutes; target.ConsistencyMode = task.ConsistencyMode; target.ConsistencyContainerNames = task.ConsistencyContainerNames; target.PreBackupCommand = task.PreBackupCommand; target.PostBackupCommand = task.PostBackupCommand; target.ConsistencyTimeoutSeconds = task.ConsistencyTimeoutSeconds; target.Enabled = task.Enabled; target.NextRunDate = task.Enabled ? BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now) : null; target.UpdateDate = now;
         data.BackupTaskLabels.RemoveAll(item => item.BackupTaskId == id);
         var nextAssignmentId = store.NextId(data.BackupTaskLabels.Select(item => item.Id));
         foreach (var labelId in labelIds)
             data.BackupTaskLabels.Add(new BackupTaskLabel { Id = nextAssignmentId++, BackupTaskId = id, JobLabelId = labelId, CreateDate = target.UpdateDate, UpdateDate = target.UpdateDate });
     });
+    if (!isAdmin) { task.PreBackupCommand = ""; task.PostBackupCommand = ""; }
     return Results.Ok(task);
 });
 app.MapDelete("/api/tasks/{id:long}", (long id, PersistentStore store) =>
@@ -463,6 +485,29 @@ app.MapPost("/api/auth/login", (LoginRequest request, HttpContext context, Persi
     return Results.Ok(new { user = user.UserName, role = user.Role.ToString() });
 });
 app.MapPost("/api/auth/logout", (HttpContext context, PersistentStore store) => { var token = context.Request.Cookies["matbu_session"]; store.Update(data => data.UserSessions.RemoveAll(x => x.Token == token)); context.Response.Cookies.Delete("matbu_session"); return Results.Ok(); });
+
+static AppUser? CurrentUser(HttpContext context, PersistentStore store)
+{
+    var data = store.Read();
+    var session = data.UserSessions.FirstOrDefault(item => item.Token == context.Request.Cookies["matbu_session"] && item.ExpiresDate > DateTimeOffset.UtcNow);
+    return session is null ? null : data.Users.FirstOrDefault(item => item.Id == session.UserId);
+}
+
+static string? ValidateConsistency(BackupTask task)
+{
+    task.ConsistencyContainerNames = task.ConsistencyContainerNames?.Trim() ?? "";
+    task.PreBackupCommand = task.PreBackupCommand?.Trim() ?? "";
+    task.PostBackupCommand = task.PostBackupCommand?.Trim() ?? "";
+    if (!Enum.IsDefined(task.ConsistencyMode)) return "Der Konsistenzmodus ist ungültig.";
+    if (task.ConsistencyMode == BackupConsistencyMode.None) return null;
+    if (task.Method != BackupMethod.Full) return "Anwendungskonsistenz ist derzeit nur für Full-Backups verfügbar.";
+    if (task.ConsistencyTimeoutSeconds is < 5 or > 900) return "Der Hook-Timeout muss zwischen 5 und 900 Sekunden liegen.";
+    var containers = task.ConsistencyContainerNames.Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (task.ConsistencyMode == BackupConsistencyMode.DockerPause && containers.Length == 0) return "Docker Pause benötigt mindestens einen Container.";
+    if (task.ConsistencyMode == BackupConsistencyMode.DockerExec && containers.Length != 1) return "Docker Exec benötigt genau einen Container.";
+    if (task.ConsistencyMode == BackupConsistencyMode.DockerExec && string.IsNullOrWhiteSpace(task.PreBackupCommand) && string.IsNullOrWhiteSpace(task.PostBackupCommand)) return "Docker Exec benötigt mindestens ein Pre- oder Post-Kommando.";
+    return null;
+}
 
 app.MapRazorPages();
 app.Run();

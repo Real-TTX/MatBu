@@ -65,11 +65,19 @@ public sealed class PersistentStore
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN MaxRetryAttempts INTEGER NOT NULL DEFAULT 5"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN RetryDelayMinutes INTEGER NOT NULL DEFAULT 2"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN NextRetryDate TEXT NULL"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN ConsistencyMode TEXT NOT NULL DEFAULT 'None'"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN ConsistencyContainerNames TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN PreBackupCommand TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN PostBackupCommand TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN ConsistencyTimeoutSeconds INTEGER NOT NULL DEFAULT 60"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN LabelSnapshotJson TEXT NOT NULL DEFAULT '[]'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN RetentionExpired INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN Compression TEXT NOT NULL DEFAULT 'None'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN EstimatedStoredBytes INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN SourceSelectionJson TEXT NOT NULL DEFAULT '[]'"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyMode TEXT NOT NULL DEFAULT 'None'"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyContainerNames TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyTimeoutSeconds INTEGER NOT NULL DEFAULT 60"); } catch (SqliteException) { }
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS JobLabel (Id INTEGER NOT NULL CONSTRAINT PK_JobLabel PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL, Color TEXT NOT NULL, CreateDate TEXT NOT NULL, CreateUserId INTEGER NOT NULL, UpdateDate TEXT NOT NULL, UpdateUserId INTEGER NOT NULL)");
         db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS IX_JobLabel_Name ON JobLabel (Name COLLATE NOCASE)");
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS BackupTaskLabel (Id INTEGER NOT NULL CONSTRAINT PK_BackupTaskLabel PRIMARY KEY AUTOINCREMENT, BackupTaskId INTEGER NOT NULL, JobLabelId INTEGER NOT NULL, CreateDate TEXT NOT NULL, CreateUserId INTEGER NOT NULL, UpdateDate TEXT NOT NULL, UpdateUserId INTEGER NOT NULL)");

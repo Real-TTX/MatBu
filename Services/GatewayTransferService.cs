@@ -12,13 +12,17 @@ public sealed record GatewayArchiveMetrics(long SourceBytes, long StoredBytes);
 
 public sealed class GatewayTransferService(
     ArchiveService archiveService,
+    DockerConsistencyService dockerConsistency,
     SmbClientService smbClient,
     PersistentStore store,
     ILogger<GatewayTransferService> logger)
 {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _transferLocks = new(StringComparer.OrdinalIgnoreCase);
 
-    public async Task<string> PrepareSourceArchiveAsync(GatewaySourceRequest request, CancellationToken cancellationToken)
+    public Task<string> PrepareSourceArchiveAsync(GatewaySourceRequest request, CancellationToken cancellationToken) =>
+        PrepareSourceArchiveAsync(request, new BackupConsistencySettings(BackupConsistencyMode.None, "", "", "", 60), cancellationToken);
+
+    public async Task<string> PrepareSourceArchiveAsync(GatewaySourceRequest request, BackupConsistencySettings consistency, CancellationToken cancellationToken)
     {
         EnsureTransferId(request.TransferId);
         var gate = _transferLocks.GetOrAdd(request.TransferId, _ => new SemaphoreSlim(1, 1));
@@ -32,10 +36,20 @@ public sealed class GatewayTransferService(
             if (File.Exists(buildingPath)) File.Delete(buildingPath);
             var source = new BackupObject { Kind = request.Kind, Location = request.Location };
             (string Username, string Password)? credential = string.IsNullOrWhiteSpace(request.SmbUsername) || request.SmbPassword is null ? null : (request.SmbUsername!, request.SmbPassword!);
-            var result = await archiveService.CreateCompressedAsync(source, credential, buildingPath, request.Compression, null, cancellationToken, request.IncludedPaths);
-            File.Move(buildingPath, archivePath, overwrite: true);
-            await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes)), cancellationToken);
-            return archivePath;
+            DockerConsistencyLease? lease = null;
+            try
+            {
+                if (consistency.Mode != BackupConsistencyMode.None)
+                    lease = await dockerConsistency.BeginAsync(consistency, cancellationToken);
+                var result = await archiveService.CreateCompressedAsync(source, credential, buildingPath, request.Compression, null, cancellationToken, request.IncludedPaths);
+                File.Move(buildingPath, archivePath, overwrite: true);
+                await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes)), cancellationToken);
+                return archivePath;
+            }
+            finally
+            {
+                if (lease is not null) await dockerConsistency.EndAsync(consistency, lease, CancellationToken.None);
+            }
         }
         finally { gate.Release(); }
     }

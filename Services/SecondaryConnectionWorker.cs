@@ -93,7 +93,7 @@ public sealed class SecondaryConnectionWorker(
                 case SecondaryCommandKind.ExportSource:
                 {
                     var payload = JsonSerializer.Deserialize<SecondaryExportPayload>(command.PayloadJson) ?? throw new InvalidOperationException("Export-Payload fehlt.");
-                    var archive = await transfers.PrepareSourceArchiveAsync(payload.Source, cancellationToken);
+                    var archive = await transfers.PrepareSourceArchiveAsync(payload.Source, payload.Consistency, cancellationToken);
                     var length = new FileInfo(archive).Length;
                     await PushSourceAsync(client, command, archive, payload.JobId, length, cancellationToken);
                     var metrics = transfers.GetSourceMetrics(command.TransferId);

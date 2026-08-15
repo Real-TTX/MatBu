@@ -23,6 +23,7 @@ public enum SecondaryCommandKind
 }
 public enum BackupMethod { Full, ReverseIncremental }
 public enum BackupCompression { None, Fast, Balanced, Maximum }
+public enum BackupConsistencyMode { None, DockerPause, DockerExec }
 
 public abstract class AuditedEntity
 {
@@ -84,6 +85,9 @@ public sealed class TransferJob
     public long SpeedBytesPerSecond { get; set; }
     public BackupMethod Method { get; set; } = BackupMethod.Full;
     public BackupCompression Compression { get; set; } = BackupCompression.None;
+    public BackupConsistencyMode ConsistencyMode { get; set; }
+    public string ConsistencyContainerNames { get; set; } = "";
+    public int ConsistencyTimeoutSeconds { get; set; } = 60;
     public long EstimatedStoredBytes { get; set; }
     public string SourceSelectionJson { get; set; } = "[]";
     public long SnapshotId { get; set; }
@@ -145,6 +149,11 @@ public sealed class BackupTask : AuditedEntity
     public long TargetId { get; set; }
     public BackupMethod Method { get; set; } = BackupMethod.Full;
     public BackupCompression Compression { get; set; } = BackupCompression.Fast;
+    public BackupConsistencyMode ConsistencyMode { get; set; }
+    public string ConsistencyContainerNames { get; set; } = "";
+    public string PreBackupCommand { get; set; } = "";
+    public string PostBackupCommand { get; set; } = "";
+    public int ConsistencyTimeoutSeconds { get; set; } = 60;
     public string SourceSelectionJson { get; set; } = "[]";
     public int ChunkSizeMiB { get; set; } = 8;
     public string Schedule { get; set; } = "Täglich · 02:00";

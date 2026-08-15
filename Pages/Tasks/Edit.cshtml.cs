@@ -28,6 +28,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
     public IReadOnlyList<BackupObject> Objects { get; private set; } = [];
     public IReadOnlyList<JobLabel> JobLabels { get; private set; } = [];
     public IReadOnlyList<int> AllowedChunkSizesMiB => ValidChunkSizesMiB;
+    public bool CanManageConsistency => CurrentUser?.Role == UserRole.Admin;
     public string? Error { get; private set; }
 
     public IActionResult OnGet()
@@ -76,6 +77,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
         Input.SourceSelectionJson = SourceSelection.Serialize(SelectedSourcePaths);
         ValidateBackupMethod();
         ValidateRetryPolicy();
+        ValidateConsistency(data);
 
         var source = Objects.FirstOrDefault(x => x.Id == Input.SourceId);
         var target = Objects.FirstOrDefault(x => x.Id == Input.TargetId);
@@ -111,6 +113,11 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
             item.ChunkSizeMiB = Input.ChunkSizeMiB;
             item.MaxRetryAttempts = Input.MaxRetryAttempts;
             item.RetryDelayMinutes = Input.RetryDelayMinutes;
+            item.ConsistencyMode = Input.ConsistencyMode;
+            item.ConsistencyContainerNames = Input.ConsistencyContainerNames;
+            item.PreBackupCommand = Input.PreBackupCommand;
+            item.PostBackupCommand = Input.PostBackupCommand;
+            item.ConsistencyTimeoutSeconds = Input.ConsistencyTimeoutSeconds;
             item.NextRunDate = Input.Enabled ? BackupSchedule.GetNextOccurrenceUtc(Input.Schedule, now) : null;
             item.UpdateDate = now;
             item.UpdateUserId = CurrentUser!.Id;
@@ -195,6 +202,43 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
         if (Input.RetryDelayMinutes is < 1 or > 1440)
             ModelState.AddModelError("Input.RetryDelayMinutes", "Die Basis-Wartezeit muss zwischen 1 und 1440 Minuten liegen.");
     }
+
+    private void ValidateConsistency(AppData data)
+    {
+        Input.ConsistencyContainerNames = Input.ConsistencyContainerNames?.Trim() ?? "";
+        Input.PreBackupCommand = Input.PreBackupCommand?.Trim() ?? "";
+        Input.PostBackupCommand = Input.PostBackupCommand?.Trim() ?? "";
+        if (!Enum.IsDefined(Input.ConsistencyMode))
+            ModelState.AddModelError("Input.ConsistencyMode", "Bitte einen gültigen Konsistenzmodus auswählen.");
+
+        var existing = Id is null ? null : data.Tasks.FirstOrDefault(item => item.Id == Id);
+        if (CurrentUser!.Role != UserRole.Admin && !SameConsistency(existing, Input))
+            ModelState.AddModelError("Input.ConsistencyMode", "Nur Administratoren dürfen die Docker-Konsistenzsteuerung ändern.");
+
+        if (Input.ConsistencyMode == BackupConsistencyMode.None) return;
+        if (Input.Method != BackupMethod.Full)
+            ModelState.AddModelError("Input.ConsistencyMode", "Docker-Konsistenzsteuerung ist derzeit nur für Full-Backups verfügbar.");
+        if (Input.ConsistencyTimeoutSeconds is < 5 or > 900)
+            ModelState.AddModelError("Input.ConsistencyTimeoutSeconds", "Der Hook-Timeout muss zwischen 5 und 900 Sekunden liegen.");
+
+        var containers = Input.ConsistencyContainerNames.Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (Input.ConsistencyMode == BackupConsistencyMode.DockerPause && containers.Length == 0)
+            ModelState.AddModelError("Input.ConsistencyContainerNames", "Gib mindestens einen zu pausierenden Container an.");
+        if (Input.ConsistencyMode == BackupConsistencyMode.DockerExec)
+        {
+            if (containers.Length != 1) ModelState.AddModelError("Input.ConsistencyContainerNames", "Docker Exec benötigt genau einen Container.");
+            if (string.IsNullOrWhiteSpace(Input.PreBackupCommand) && string.IsNullOrWhiteSpace(Input.PostBackupCommand))
+                ModelState.AddModelError("Input.PreBackupCommand", "Gib mindestens ein Pre- oder Post-Kommando an.");
+        }
+    }
+
+    private static bool SameConsistency(BackupTask? existing, BackupTask input) => existing is null
+        ? input.ConsistencyMode == BackupConsistencyMode.None
+        : existing.ConsistencyMode == input.ConsistencyMode &&
+          existing.ConsistencyContainerNames == input.ConsistencyContainerNames &&
+          existing.PreBackupCommand == input.PreBackupCommand &&
+          existing.PostBackupCommand == input.PostBackupCommand &&
+          existing.ConsistencyTimeoutSeconds == input.ConsistencyTimeoutSeconds;
 
     private void AddLabelAssignments(AppData data, long taskId, IEnumerable<long> labelIds, DateTimeOffset now)
     {

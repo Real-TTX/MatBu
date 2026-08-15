@@ -52,9 +52,11 @@ public sealed class MatBuDbContext(DbContextOptions<MatBuDbContext> options) : D
         modelBuilder.Entity<SecondaryCommand>().Property(x => x.Kind).HasConversion<string>();
         modelBuilder.Entity<BackupTask>().Property(x => x.Method).HasConversion<string>();
         modelBuilder.Entity<BackupTask>().Property(x => x.Compression).HasConversion<string>();
+        modelBuilder.Entity<BackupTask>().Property(x => x.ConsistencyMode).HasConversion<string>();
         var transferJobMethod = modelBuilder.Entity<TransferJob>().Property(x => x.Method).HasConversion<string>();
         transferJobMethod.Metadata.SetAfterSaveBehavior(PropertySaveBehavior.Throw);
         modelBuilder.Entity<TransferJob>().Property(x => x.Compression).HasConversion<string>();
+        modelBuilder.Entity<TransferJob>().Property(x => x.ConsistencyMode).HasConversion<string>();
         modelBuilder.Entity<BackupSnapshot>().Property(x => x.Method).HasConversion<string>();
 
         modelBuilder.Entity<JobStep>().HasIndex(x => new { x.TransferJobId, x.Sequence });

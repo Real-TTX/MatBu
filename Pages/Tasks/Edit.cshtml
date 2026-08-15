@@ -133,6 +133,49 @@
             <small>Full-Archive werden während der Erstellung gestreamt komprimiert. Für VMDK/ZIP ist „Aus“ oft schneller.</small>
             <span asp-validation-for="Input.Compression" class="field-error"></span>
         </div>
+        @if (Model.CanManageConsistency)
+        {
+            <div class="field consistency-main-field">
+                <label asp-for="Input.ConsistencyMode">Anwendungskonsistenz</label>
+                <select asp-for="Input.ConsistencyMode" id="consistency-mode">
+                    <option value="None">Keine · Crash-konsistent</option>
+                    <option value="DockerPause">Docker-Container während Aufnahme pausieren</option>
+                    <option value="DockerExec">Pre-/Post-Kommando im Docker-Container</option>
+                </select>
+                <small>Die Anwendung wird nur während der lokalen Quellaufnahme angehalten – nicht während der Übertragung.</small>
+                <span asp-validation-for="Input.ConsistencyMode" class="field-error"></span>
+            </div>
+            <div class="field consistency-detail-field" data-consistency-detail>
+                <label asp-for="Input.ConsistencyContainerNames">Docker-Container</label>
+                <input asp-for="Input.ConsistencyContainerNames" placeholder="z. B. vmware-backup oder db,app" />
+                <small>Pause: mehrere Namen mit Komma trennen. Exec: genau ein Container.</small>
+                <span asp-validation-for="Input.ConsistencyContainerNames" class="field-error"></span>
+            </div>
+            <div class="field consistency-exec-field" data-consistency-exec>
+                <label asp-for="Input.PreBackupCommand">Pre-Backup-Kommando</label>
+                <input asp-for="Input.PreBackupCommand" placeholder="z. B. pg_start_backup" autocomplete="off" />
+                <small>Wird über <code>/bin/sh -c</code> innerhalb des Containers ausgeführt.</small>
+                <span asp-validation-for="Input.PreBackupCommand" class="field-error"></span>
+            </div>
+            <div class="field consistency-exec-field" data-consistency-exec>
+                <label asp-for="Input.PostBackupCommand">Post-Backup-Kommando</label>
+                <input asp-for="Input.PostBackupCommand" placeholder="Anwendung wieder freigeben" autocomplete="off" />
+                <small>Läuft auch dann als Cleanup, wenn die Quellaufnahme fehlschlägt.</small>
+            </div>
+            <div class="field consistency-detail-field" data-consistency-detail>
+                <label asp-for="Input.ConsistencyTimeoutSeconds">Hook-Timeout</label>
+                <div class="input-suffix"><input asp-for="Input.ConsistencyTimeoutSeconds" type="number" min="5" max="900" /><span>Sekunden</span></div>
+                <span asp-validation-for="Input.ConsistencyTimeoutSeconds" class="field-error"></span>
+            </div>
+        }
+        else
+        {
+            <input asp-for="Input.ConsistencyMode" type="hidden" />
+            <input asp-for="Input.ConsistencyContainerNames" type="hidden" />
+            <input asp-for="Input.PreBackupCommand" type="hidden" />
+            <input asp-for="Input.PostBackupCommand" type="hidden" />
+            <input asp-for="Input.ConsistencyTimeoutSeconds" type="hidden" />
+        }
         <div class="field">
             <label asp-for="Input.Retention">Retention</label>
             <select asp-for="Input.Retention">
@@ -193,6 +236,25 @@
 
         method.addEventListener('change', updateChunkSelection);
         updateChunkSelection();
+    })();
+
+    (() => {
+        const mode = document.getElementById('consistency-mode');
+        const method = document.getElementById('backup-method');
+        if (!mode || !method) return;
+        const details = document.querySelectorAll('[data-consistency-detail]');
+        const execFields = document.querySelectorAll('[data-consistency-exec]');
+        const update = () => {
+            const enabled = mode.value !== 'None';
+            const exec = mode.value === 'DockerExec';
+            details.forEach(element => element.hidden = !enabled);
+            execFields.forEach(element => element.hidden = !exec);
+            if (enabled && method.value !== 'Full') mode.setCustomValidity('Anwendungskonsistenz ist derzeit nur mit Full-Backups möglich.');
+            else mode.setCustomValidity('');
+        };
+        mode.addEventListener('change', update);
+        method.addEventListener('change', update);
+        update();
     })();
 
     (() => {

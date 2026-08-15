@@ -4,7 +4,7 @@ using MatBu.Models;
 
 namespace MatBu.Services;
 
-public sealed record SecondaryExportPayload(GatewaySourceRequest Source, long JobId);
+public sealed record SecondaryExportPayload(GatewaySourceRequest Source, long JobId, BackupConsistencySettings Consistency);
 public sealed record SecondaryImportPayload(GatewayTargetRequest Target, long JobId, long TotalBytes);
 
 public sealed class BackupTaskExecutor(
@@ -15,6 +15,7 @@ public sealed class BackupTaskExecutor(
     IncrementalSourceService incrementalSources,
     ReverseIncrementalRepositoryService incrementalRepository,
     BackupRetentionService retentionService,
+    DockerConsistencyService dockerConsistency,
     ILogger<BackupTaskExecutor> logger)
 {
     public async Task ExecuteAsync(BackupTask task, CancellationToken cancellationToken)
@@ -381,7 +382,7 @@ public sealed class BackupTaskExecutor(
 
         if (sourceInstance.Role == InstanceRole.Secondary)
         {
-            await DownloadFromSecondaryAsync(source, sourceInstance, job, partialPath, cancellationToken);
+            await DownloadFromSecondaryAsync(task, source, sourceInstance, job, partialPath, cancellationToken);
             File.Move(partialPath, cachePath, overwrite: true);
             var secondaryLength = new FileInfo(cachePath).Length;
             AppendStep(
@@ -399,14 +400,7 @@ public sealed class BackupTaskExecutor(
         TryDelete(partialPath);
         var buildingPath = partialPath + ".building";
         TryDelete(buildingPath);
-        var result = await archiveService.CreateCompressedAsync(
-            source,
-            store.GetSmbCredential(source.Id),
-            buildingPath,
-            task.Compression,
-            progress => MarkArchiveProgress(job.Id, progress, buildingPath),
-            cancellationToken,
-            SourceSelection.Parse(task.SourceSelectionJson));
+        var result = await CreateLocalSourceArchiveAsync(task, source, sourceInstance, job, buildingPath, cancellationToken);
         File.Move(buildingPath, cachePath, overwrite: true);
         var length = new FileInfo(cachePath).Length;
         MarkArchiveMetrics(job.Id, result.SourceBytes, result.StoredBytes);
@@ -415,6 +409,7 @@ public sealed class BackupTaskExecutor(
     }
 
     private async Task DownloadFromSecondaryAsync(
+        BackupTask task,
         BackupObject source,
         MatBuInstance instance,
         TransferJob job,
@@ -424,7 +419,8 @@ public sealed class BackupTaskExecutor(
         var transferId = EnsureTransferId(job);
         var credential = store.GetSmbCredential(source.Id);
         var request = new GatewaySourceRequest(transferId, source.Kind, source.Location, credential?.Username, credential?.Password, Compression: job.Compression, IncludedPaths: SourceSelection.Parse(job.SourceSelectionJson));
-        var commandId = commands.Queue(instance.Id, SecondaryCommandKind.ExportSource, transferId, new SecondaryExportPayload(request, job.Id));
+        var consistency = BackupConsistencySettings.FromTask(task);
+        var commandId = commands.Queue(instance.Id, SecondaryCommandKind.ExportSource, transferId, new SecondaryExportPayload(request, job.Id, consistency));
         AppendStep(
             job.Id,
             "Gateway",
@@ -432,10 +428,14 @@ public sealed class BackupTaskExecutor(
             $"Export-Kommando #{commandId} wurde für Secondary '{instance.Name}' bereitgestellt. Die Secondary holt es über ihre ausgehende Verbindung ab.",
             instance.Name,
             source.Location);
+        if (job.ConsistencyMode != BackupConsistencyMode.None)
+            AppendStep(job.Id, "Konsistenz", "Queued", $"Konsistenzmodus {ConsistencyLabel(job.ConsistencyMode)} wird auf Secondary '{instance.Name}' direkt um die Quellaufnahme ausgeführt.", instance.Name, job.ConsistencyContainerNames);
 
         var command = await commands.WaitForCompletionAsync(commandId, cancellationToken);
         if (command.State != "Completed")
             throw new IOException(string.IsNullOrWhiteSpace(command.Error) ? "Die Secondary konnte die Quelle nicht exportieren." : command.Error);
+        if (job.ConsistencyMode != BackupConsistencyMode.None)
+            AppendStep(job.Id, "Konsistenz", "Completed", "Die Secondary hat die Anwendung nach der Quellaufnahme wieder freigegeben.", instance.Name, job.ConsistencyContainerNames);
 
         var metrics = JsonSerializer.Deserialize<GatewayArchiveMetrics>(command.ResultJson);
 
@@ -587,6 +587,9 @@ public sealed class BackupTaskExecutor(
         job.TaskToken = task.Token;
         job.Method = task.Method;
         job.Compression = task.Method == BackupMethod.Full ? task.Compression : BackupCompression.None;
+        job.ConsistencyMode = task.ConsistencyMode;
+        job.ConsistencyContainerNames = task.ConsistencyContainerNames;
+        job.ConsistencyTimeoutSeconds = task.ConsistencyTimeoutSeconds;
         job.SourceSelectionJson = task.SourceSelectionJson;
         job.SourceObjectId = source.Id;
         job.SourceObjectName = source.Name;
@@ -604,6 +607,52 @@ public sealed class BackupTaskExecutor(
 
     private TransferJob ReadJob(long id) => store.Read().TransferJobs.First(job => job.Id == id);
     private string EnsureTransferId(TransferJob job) => ReadJob(job.Id).TransferId;
+
+    private async Task<ArchiveCreationResult> CreateLocalSourceArchiveAsync(
+        BackupTask task,
+        BackupObject source,
+        MatBuInstance sourceInstance,
+        TransferJob job,
+        string buildingPath,
+        CancellationToken cancellationToken)
+    {
+        async Task<ArchiveCreationResult> CreateAsync() => await archiveService.CreateCompressedAsync(
+            source,
+            store.GetSmbCredential(source.Id),
+            buildingPath,
+            task.Compression,
+            progress => MarkArchiveProgress(job.Id, progress, buildingPath),
+            cancellationToken,
+            SourceSelection.Parse(task.SourceSelectionJson));
+
+        if (task.ConsistencyMode == BackupConsistencyMode.None) return await CreateAsync();
+
+        var settings = BackupConsistencySettings.FromTask(task);
+        AppendStep(job.Id, "Konsistenz", "Started", $"{ConsistencyLabel(task.ConsistencyMode)} wird vor der Quellaufnahme aktiviert.", sourceInstance.Name, task.ConsistencyContainerNames);
+        var lease = await dockerConsistency.BeginAsync(settings, cancellationToken);
+        AppendStep(job.Id, "Konsistenz", "Active", "Anwendung ist für die konsistente Quellaufnahme vorbereitet.", sourceInstance.Name, task.ConsistencyContainerNames);
+        try { return await CreateAsync(); }
+        finally
+        {
+            try
+            {
+                await dockerConsistency.EndAsync(settings, lease, CancellationToken.None);
+                AppendStep(job.Id, "Konsistenz", "Completed", "Anwendung wurde nach der Quellaufnahme wieder freigegeben.", sourceInstance.Name, task.ConsistencyContainerNames);
+            }
+            catch (Exception exception)
+            {
+                AppendStep(job.Id, "Konsistenz", "Failed", $"Freigabe nach der Quellaufnahme fehlgeschlagen: {exception.Message}", sourceInstance.Name, task.ConsistencyContainerNames);
+                throw new InvalidOperationException("Die Anwendung konnte nach der Quellaufnahme nicht sicher freigegeben werden.", exception);
+            }
+        }
+    }
+
+    private static string ConsistencyLabel(BackupConsistencyMode mode) => mode switch
+    {
+        BackupConsistencyMode.DockerPause => "Docker Pause",
+        BackupConsistencyMode.DockerExec => "Docker Pre-/Post-Hook",
+        _ => "Crash-konsistente Aufnahme"
+    };
 
     private void MarkTask(long taskId, string state)
     {

@@ -52,6 +52,10 @@ Der Endpunkt antwortet mit `200 Healthy`, wenn alle Objects erreichbar sind, kei
 
 Unter **Benutzer → Benachrichtigungen** oder über das Glocken-Symbol können Administratoren Webhook- und SMTP-Benachrichtigungen konfigurieren und getrennt testen. MatBu kann erfolgreiche und fehlgeschlagene Backup- sowie Restore-Jobs melden. Webhooks erhalten JSON mit Job, Route, Größen, Ziel und Fehlerdetails. Zustellungen werden in SQLite protokolliert, bei Fehlern bis zu dreimal wiederholt und nach einem Container-Neustart nicht doppelt versendet. Das SMTP-Passwort wird verschlüsselt in `/data/notifications.json` gespeichert; die Data-Protection-Schlüssel liegen ebenfalls im persistenten Volume.
 
+## Anwendungskonsistente Docker-Backups
+
+Full-Jobs können optional Docker-Container nur während der lokalen Quellaufnahme pausieren oder Pre-/Post-Kommandos über `/bin/sh -c` innerhalb eines Containers ausführen. Bei einer Quelle auf einer Secondary wird die Konsistenzsteuerung dort lokal ausgeführt; die Anwendung ist vor der anschließenden Übertragung bereits wieder freigegeben. Jeder Schritt erscheint im Jobprotokoll. Aktive Leases werden verschlüsselt im jeweiligen Datenvolume gespeichert und nach einem Worker- oder Secondary-Neustart automatisch bereinigt, damit pausierte Anwendungen und Post-Hooks wieder freigegeben werden. Die Konfiguration ist Administratoren vorbehalten; Kommandotexte werden nicht in die Jobhistorie kopiert.
+
 ## Nächste technische Bausteine
 
 1. per-Object-Credential-Verwaltung statt globaler SMB-Umgebungsvariablen

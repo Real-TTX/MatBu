@@ -45,6 +45,16 @@
     else { <div class="job-tags">@foreach (var path in selectedSourcePaths) { <span class="job-tag">@path</span> }</div> }
 </div>
 
+@if (Model.Job.ConsistencyMode != MatBu.Models.BackupConsistencyMode.None)
+{
+    <div class="actual-destination panel">
+        <span class="route-label">Anwendungskonsistenz</span>
+        <strong>@ConsistencyName(Model.Job.ConsistencyMode)</strong>
+        <code>@Model.Job.ConsistencyContainerNames</code>
+        <small>Timeout @Model.Job.ConsistencyTimeoutSeconds Sekunden · Pre-/Post-Kommandos werden aus Sicherheitsgründen nicht in der Jobhistorie gespeichert.</small>
+    </div>
+}
+
 @if (Model.Job.RetentionExpired)
 {
     <div class="test-result"><strong>Version durch Retention entfernt</strong><span>Das Ausführungsprotokoll bleibt erhalten, die Sicherungsdaten dieser Version sind nicht mehr wiederherstellbar.</span></div>
@@ -107,5 +117,6 @@
 @functions {
     string FormatSpeed(long value) => value <= 0 ? "—" : value >= 1024 * 1024 ? $"{value / 1024d / 1024d:0.0} MB/s" : $"{value / 1024d:0.0} KB/s";
     string CompressionName(MatBu.Models.BackupCompression value) => value switch { MatBu.Models.BackupCompression.Fast => "Brotli schnell", MatBu.Models.BackupCompression.Balanced => "Brotli ausgewogen", MatBu.Models.BackupCompression.Maximum => "Brotli maximal", _ => "Unkomprimiert" };
+    string ConsistencyName(MatBu.Models.BackupConsistencyMode value) => value switch { MatBu.Models.BackupConsistencyMode.DockerPause => "Docker Pause", MatBu.Models.BackupConsistencyMode.DockerExec => "Docker Pre-/Post-Hook", _ => "Crash-konsistent" };
     string StepStatusClass(string state) => state is "Failed" or "Cancelled" ? "offline" : state is "Started" or "Queued" or "Resumed" ? "warning" : "";
 }
