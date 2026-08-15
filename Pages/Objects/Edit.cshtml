@@ -31,6 +31,7 @@
                 <option value="MatBuSlave">MatBu Slave</option>
                 <option value="DockerVolume">Docker Volume</option>
                 <option value="Proxmox">Proxmox VE</option>
+                <option value="ProxmoxBackupServer">Proxmox Backup Server</option>
             </select>
         </div>
         <div class="field">
@@ -56,6 +57,7 @@
             <label asp-for="Input.Location">Adresse / Volume-Name</label>
             <input asp-for="Input.Location" placeholder="\\server\freigabe\unterordner" required />
             <small id="proxmox-location-help" hidden>Proxmox: <code>https://pve:8006/?node=pve&amp;storage=local&amp;path=/proxmox-dump&amp;verifyTls=false</code>. <code>path</code> muss in der zugeordneten MatBu-Instanz gemountet sein.</small>
+            <small id="pbs-location-help" hidden>PBS: <code>https://pbs:8007/?datastore=backup&amp;pveStorage=pbs-backup&amp;verifyTls=false</code>. <code>pveStorage</code> ist die Storage-ID in PVE.</small>
             @if (!string.IsNullOrWhiteSpace(Model.SmbPathSummary))
             {
                 <small class="path-summary">Erkannt: @Model.SmbPathSummary</small>
@@ -111,15 +113,21 @@
         const kind = document.getElementById('object-kind');
         const direction = document.getElementById('object-direction');
         const proxmoxHelp = document.getElementById('proxmox-location-help');
+        const pbsHelp = document.getElementById('pbs-location-help');
         const credentialHelp = document.getElementById('credential-help');
-        if (!kind || !direction || !proxmoxHelp || !credentialHelp) return;
+        if (!kind || !direction || !proxmoxHelp || !pbsHelp || !credentialHelp) return;
         const update = () => {
             const isProxmox = kind.value === 'Proxmox';
+            const isPbs = kind.value === 'ProxmoxBackupServer';
             proxmoxHelp.hidden = !isProxmox;
+            pbsHelp.hidden = !isPbs;
             credentialHelp.textContent = isProxmox
                 ? 'Erforderlich: vollständige API Token-ID, zum Beispiel matbu@pve!backup.'
+                : isPbs
+                ? 'Erforderlich: vollständige PBS API Token-ID, zum Beispiel matbu@pbs!backup.'
                 : 'Leer lassen bedeutet bei SMB Gastzugriff.';
             if (isProxmox) direction.value = 'Source';
+            if (isPbs) direction.value = 'Target';
         };
         kind.addEventListener('change', update);
         update();

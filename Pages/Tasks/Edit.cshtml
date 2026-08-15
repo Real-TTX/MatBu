@@ -94,11 +94,11 @@
         </div>
         <div class="field">
             <label asp-for="Input.TargetId">Ziel</label>
-            <select asp-for="Input.TargetId">
+            <select asp-for="Input.TargetId" id="target-object">
                 <option value="">Bitte wählen</option>
                 @foreach (var item in Model.Objects.Where(x => x.Direction != ObjectDirection.Source))
                 {
-                    <option value="@item.Id">@item.Name</option>
+                    <option value="@item.Id" data-kind="@item.Kind">@item.Name</option>
                 }
             </select>
         </div>
@@ -108,6 +108,7 @@
                 <option value="ReverseIncremental">Reverse Incremental (empfohlen)</option>
                 <option value="ForwardIncremental">Forward Incremental</option>
                 <option value="Differential">Differential</option>
+                <option value="ProxmoxNative">Proxmox Native (PBS/CBT)</option>
                 <option value="Full">Full</option>
             </select>
             <small>Reverse: aktueller Stand direkt lesbar. Forward: Änderungen zum Vorgänger. Differential: Änderungen zur ersten Baseline.</small>
@@ -222,6 +223,8 @@
 <script>
     (() => {
         const method = document.getElementById('backup-method');
+        const source = document.getElementById('source-object');
+        const target = document.getElementById('target-object');
         const chunkField = document.getElementById('chunk-size-field');
         const chunkSize = document.getElementById('chunk-size');
         const compressionField = document.getElementById('compression-field');
@@ -229,14 +232,23 @@
         if (!method || !chunkField || !chunkSize || !compressionField || !compression) return;
 
         const updateChunkSelection = () => {
-            const isChunked = method.value !== 'Full';
+            const isChunked = ['ForwardIncremental', 'Differential', 'ReverseIncremental'].includes(method.value);
+            const isFull = method.value === 'Full';
             chunkField.hidden = !isChunked;
             chunkSize.disabled = !isChunked;
-            compressionField.hidden = isChunked;
-            compression.disabled = isChunked;
+            compressionField.hidden = !isFull;
+            compression.disabled = !isFull;
         };
 
         method.addEventListener('change', updateChunkSelection);
+        const updateNativeRoute = () => {
+            const sourceKind = source?.selectedOptions?.[0]?.dataset.kind;
+            const targetKind = target?.selectedOptions?.[0]?.dataset.kind;
+            if (sourceKind === 'Proxmox' && targetKind === 'ProxmoxBackupServer') method.value = 'ProxmoxNative';
+            updateChunkSelection();
+        };
+        source?.addEventListener('change', updateNativeRoute);
+        target?.addEventListener('change', updateNativeRoute);
         updateChunkSelection();
     })();
 

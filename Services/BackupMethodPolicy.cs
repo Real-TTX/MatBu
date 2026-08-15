@@ -12,6 +12,7 @@ public static class BackupMethodPolicy
         BackupMethod.ForwardIncremental => "Forward Incremental",
         BackupMethod.Differential => "Differential",
         BackupMethod.ReverseIncremental => "Reverse Incremental",
+        BackupMethod.ProxmoxNative => "Proxmox Native (PBS)",
         _ => "Full"
     };
 }

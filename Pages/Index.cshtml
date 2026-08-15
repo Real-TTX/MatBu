@@ -152,7 +152,10 @@
                     <div class="dashboard-list-row">
                         <span class="list-icon"><svg class="ui-icon"><use href="#icon-folder"></use></svg></span>
                         <span class="row-main"><strong>@task.Name</strong><small>@(storage.HasBackup ? $"{FormatSize(storage.CurrentBytes)} aktuell · {FormatSize(storage.TotalWithVersionsBytes)} inkl. Versionen" : "Noch keine Backupgröße")</small></span>
-                        <a class="icon-action" asp-page="/Restore/Explorer" asp-route-taskId="@task.Id" title="Datei-Explorer" aria-label="Datei-Explorer für @task.Name öffnen"><svg class="ui-icon"><use href="#icon-folder"></use></svg></a>
+                        @if (task.Method != BackupMethod.ProxmoxNative)
+                        {
+                            <a class="icon-action" asp-page="/Restore/Explorer" asp-route-taskId="@task.Id" title="Datei-Explorer" aria-label="Datei-Explorer für @task.Name öffnen"><svg class="ui-icon"><use href="#icon-folder"></use></svg></a>
+                        }
                     </div>
                 }
             </div>

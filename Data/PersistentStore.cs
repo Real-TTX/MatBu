@@ -18,6 +18,7 @@ public sealed class PersistentStore
     private readonly IDataProtectionProvider _dataProtectionProvider;
     private readonly IDataProtector _credentialProtector;
     private readonly IDataProtector _instanceTokenProtector;
+    private readonly IDataProtector _secondaryCommandProtector;
 
     public PersistentStore(IHostEnvironment environment)
     {
@@ -31,6 +32,7 @@ public sealed class PersistentStore
         _dataProtectionProvider = DataProtectionProvider.Create(new DirectoryInfo(keysDirectory));
         _credentialProtector = _dataProtectionProvider.CreateProtector("MatBu.SmbCredential.v1");
         _instanceTokenProtector = _dataProtectionProvider.CreateProtector("MatBu.InstanceToken.v1");
+        _secondaryCommandProtector = _dataProtectionProvider.CreateProtector("MatBu.SecondaryCommand.v1");
         var builder = new DbContextOptionsBuilder<MatBuDbContext>().UseSqlite($"Data Source={Path.Combine(directory, "matbu.db")}");
         _options = builder.Options;
         using var initializationLock = AcquireProcessLock();
@@ -379,6 +381,15 @@ public sealed class PersistentStore
         var existing = data.SmbCredentials.FirstOrDefault(x => x.ObjectId == objectId);
         if (existing is null) data.SmbCredentials.Add(new SmbCredential { Id = NextId(data.SmbCredentials.Select(x => x.Id)), ObjectId = objectId, Username = username, ProtectedPassword = _credentialProtector.Protect(password), UpdateDate = DateTimeOffset.UtcNow });
         else { existing.Username = username; existing.ProtectedPassword = _credentialProtector.Protect(password); existing.UpdateDate = DateTimeOffset.UtcNow; }
+    }
+
+    public string ProtectSecondaryCommandPayload(string json) => "protected:v1:" + _secondaryCommandProtector.Protect(json);
+
+    public string UnprotectSecondaryCommandPayload(string value)
+    {
+        const string prefix = "protected:v1:";
+        if (!value.StartsWith(prefix, StringComparison.Ordinal)) return value;
+        return _secondaryCommandProtector.Unprotect(value[prefix.Length..]);
     }
 
     public void SetInstanceToken(AppData data, long instanceId, string token)

@@ -50,7 +50,7 @@
                 <td>
                     <div class="cell-stack">
                         <span class="cell-meta" data-job-sizes>Quelle @Model.FormatBytes(item.SourceBytes) · gespeichert @Model.FormatBytes(item.StoredBytes)</span>
-                        <small class="cell-meta" data-job-efficiency>@(item.Method == BackupMethod.Full ? $"{CompressionName(item.Compression)} · geschätzt {Model.FormatBytes(item.EstimatedStoredBytes)} · Rate {CompressionRate(item)}" : $"Wiederverwendet {Model.FormatBytes(item.ReusedBytes)} · Effizienz {Model.FormatEfficiency(item)}")</small>
+                        <small class="cell-meta" data-job-efficiency>@(item.Method == BackupMethod.Full ? $"{CompressionName(item.Compression)} · geschätzt {Model.FormatBytes(item.EstimatedStoredBytes)} · Rate {CompressionRate(item)}" : item.Method == BackupMethod.ProxmoxNative ? "Native PBS-Deduplizierung / CBT" : $"Wiederverwendet {Model.FormatBytes(item.ReusedBytes)} · Effizienz {Model.FormatEfficiency(item)}")</small>
                     </div>
                 </td>
                 <td><div class="cell-stack"><strong class="cell-primary" data-job-updated>@item.UpdateDate.ToLocalTime().ToString("dd.MM.yy HH:mm:ss")</strong><small class="cell-meta">Start @item.CreateDate.ToLocalTime().ToString("dd.MM.yy HH:mm")</small></div></td>

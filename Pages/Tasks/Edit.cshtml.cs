@@ -84,6 +84,12 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
         if (source is null || target is null || source.Direction == ObjectDirection.Target || target.Direction == ObjectDirection.Source || source.Id == target.Id)
             ModelState.AddModelError(string.Empty, "Quelle und Ziel müssen kompatible, unterschiedliche Objekte sein.");
 
+        if (source is not null && target is not null)
+        {
+            var routeError = BackupRoutePolicy.Validate(Input, source, target);
+            if (routeError is not null) ModelState.AddModelError("Input.Method", routeError);
+        }
+
         if (!ModelState.IsValid) return Page();
 
         Store.Update(current =>
@@ -187,6 +193,13 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
             Input.ChunkSizeMiB = 0;
             if (Input.Compression is not (BackupCompression.None or BackupCompression.Fast or BackupCompression.Balanced or BackupCompression.Maximum))
                 ModelState.AddModelError("Input.Compression", "Bitte ein gültiges Kompressionsprofil auswählen.");
+            return;
+        }
+
+        if (Input.Method == BackupMethod.ProxmoxNative)
+        {
+            Input.ChunkSizeMiB = 0;
+            Input.Compression = BackupCompression.None;
             return;
         }
 

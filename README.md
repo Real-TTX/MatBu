@@ -70,8 +70,21 @@ Als Benutzer wird die vollständige Token-ID wie `matbu@pve!backup`, als Passwor
 - **Forward Incremental:** vergleicht gegen den letzten Stand und überträgt nur neue SHA-256-Chunks.
 - **Differential:** vergleicht jeden Lauf gegen die feste Baseline; ein Restore benötigt logisch nur Baseline und gewünschten Stand.
 - **Reverse Incremental:** hält `current` als direkt lesbaren aktuellen Stand und versioniert ersetzte Chunks im Repository.
+- **Proxmox Native (PBS):** PVE schreibt VM-Disks blockbasiert und Container dateibasiert direkt in einen bereits in PVE konfigurierten PBS-Storage. MatBu orchestriert und protokolliert den Lauf, liegt aber nicht im Datenpfad.
 
 Alle blockbasierten Varianten verwenden 4, 8, 16 oder 32 MiB große Chunks, deduplizieren identische Inhalte und behalten Manifest, Parent, Baseline und Chain-Tiefe pro Snapshot. Bei Verbindungsabbruch bleiben geprüfte Chunks und Transfer-Checkpoints erhalten; der nächste Versuch setzt fehlende Daten fort.
+
+### Native PBS-Konfiguration
+
+Für native PVE→PBS-Jobs wird ein Ziel-Object vom Typ **Proxmox Backup Server** angelegt:
+
+```text
+https://pbs.example:8007/?datastore=main&pveStorage=pbs-main&namespace=customers/acme&verifyTls=false
+```
+
+`pveStorage` ist die Storage-ID, unter der derselbe PBS-Datastore bereits in PVE eingerichtet ist. Quelle und PBS-Ziel müssen derselben MatBu-Instanz zugeordnet sein. Bei einer Secondary startet diese den PVE-Task über ihre ausgehende Verbindung und sendet während langer Backups Heartbeats. Das PBS-Token benötigt Leserechte für Datastore-Status und Snapshots; das PVE-Token benötigt die Rechte zum Starten von `vzdump`. Native Retention wird in dieser Ausbaustufe bewusst über PBS-Prune-Regeln verwaltet. Ein MatBu-Datei-Explorer für PBS-VM-Images wird erst angeboten, sobald der PBS-File-Restore vollständig integriert ist.
+
+Secondary-Command-Payloads werden mit den persistenten Data-Protection-Schlüsseln verschlüsselt gespeichert. API-Token und SMB-Passwörter liegen dadurch auch während wartender oder wiederaufzunehmender Remote-Jobs nicht im Klartext in SQLite.
 
 ## Monitoring-API
 

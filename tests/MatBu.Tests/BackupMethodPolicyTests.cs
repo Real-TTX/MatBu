@@ -10,6 +10,7 @@ public sealed class BackupMethodPolicyTests
     [InlineData(BackupMethod.ForwardIncremental, true)]
     [InlineData(BackupMethod.Differential, true)]
     [InlineData(BackupMethod.ReverseIncremental, true)]
+    [InlineData(BackupMethod.ProxmoxNative, false)]
     public void IsChunked_IdentifiesBlockBasedMethods(BackupMethod method, bool expected)
     {
         Assert.Equal(expected, BackupMethodPolicy.IsChunked(method));
@@ -20,6 +21,7 @@ public sealed class BackupMethodPolicyTests
     [InlineData(BackupMethod.ForwardIncremental, "Forward Incremental")]
     [InlineData(BackupMethod.Differential, "Differential")]
     [InlineData(BackupMethod.ReverseIncremental, "Reverse Incremental")]
+    [InlineData(BackupMethod.ProxmoxNative, "Proxmox Native (PBS)")]
     public void Label_ReturnsUserFacingName(BackupMethod method, string expected)
     {
         Assert.Equal(expected, BackupMethodPolicy.Label(method));

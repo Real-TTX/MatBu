@@ -18,6 +18,7 @@ public sealed class SecondaryConnectionWorker(
     RestoreArchiveService restoreArchives,
     ObjectConnectivityTester tester,
     SourceBrowserService sourceBrowser,
+    ProxmoxNativeBackupService proxmoxNative,
     ILogger<SecondaryConnectionWorker> logger) : BackgroundService
 {
     private const int ChunkSize = 4 * 1024 * 1024;
@@ -87,6 +88,17 @@ public sealed class SecondaryConnectionWorker(
                     var source = new BackupObject { Kind = request.Kind, Direction = ObjectDirection.Source, Location = request.Location };
                     (string Username, string Password)? credential = string.IsNullOrWhiteSpace(request.SmbUsername) || request.SmbPassword is null ? null : (request.SmbUsername!, request.SmbPassword!);
                     var result = await sourceBrowser.BrowseAsync(source, request.Path, credential, cancellationToken);
+                    await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(result, JsonOptions), "", cancellationToken);
+                    break;
+                }
+                case SecondaryCommandKind.CreateProxmoxNativeBackup:
+                {
+                    var request = JsonSerializer.Deserialize<ProxmoxNativeBackupRequest>(command.PayloadJson, JsonOptions)
+                        ?? throw new InvalidOperationException("Proxmox-Native-Payload fehlt.");
+                    var result = await proxmoxNative.ExecuteAsync(
+                        request,
+                        heartbeatCancellation => ProgressAsync(client, command.Id, 0, 0, 0, heartbeatCancellation),
+                        cancellationToken);
                     await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(result, JsonOptions), "", cancellationToken);
                     break;
                 }

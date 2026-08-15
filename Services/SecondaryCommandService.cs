@@ -22,7 +22,7 @@ public sealed class SecondaryCommandService(PersistentStore store)
                 InstanceId = instanceId,
                 Kind = kind,
                 TransferId = transferId,
-                PayloadJson = JsonSerializer.Serialize(payload),
+                PayloadJson = store.ProtectSecondaryCommandPayload(JsonSerializer.Serialize(payload)),
                 State = "Queued",
                 CreateDate = now,
                 UpdateDate = now
@@ -72,7 +72,7 @@ public sealed class SecondaryCommandService(PersistentStore store)
             current.State = "Running";
             current.UpdateDate = now;
         });
-        return leased is null ? null : new SecondaryCommandEnvelope(leased.Id, leased.Kind, leased.TransferId, leased.PayloadJson);
+        return leased is null ? null : new SecondaryCommandEnvelope(leased.Id, leased.Kind, leased.TransferId, store.UnprotectSecondaryCommandPayload(leased.PayloadJson));
     }
 
     public SecondaryCommand? Get(long id) => store.Read().SecondaryCommands.FirstOrDefault(x => x.Id == id);

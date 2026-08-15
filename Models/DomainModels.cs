@@ -2,7 +2,7 @@ namespace MatBu.Models;
 
 using System.ComponentModel.DataAnnotations.Schema;
 
-public enum ObjectKind { Smb, LocalFolder, MatBuSlave, DockerVolume, Proxmox }
+public enum ObjectKind { Smb, LocalFolder, MatBuSlave, DockerVolume, Proxmox, ProxmoxBackupServer }
 public enum ObjectDirection { Source, Target, Both }
 public enum ObjectStatus { Healthy, Warning, Offline }
 public enum UserRole { Admin, User, Operator }
@@ -19,9 +19,10 @@ public enum SecondaryCommandKind
     ApplyIncrementalTarget,
     ExportIncrementalSnapshot,
     ApplyRetention,
-    BrowseSource
+    BrowseSource,
+    CreateProxmoxNativeBackup
 }
-public enum BackupMethod { Full, ForwardIncremental, Differential, ReverseIncremental }
+public enum BackupMethod { Full, ForwardIncremental, Differential, ReverseIncremental, ProxmoxNative }
 public enum BackupCompression { None, Fast, Balanced, Maximum }
 public enum BackupConsistencyMode { None, DockerPause, DockerExec }
 

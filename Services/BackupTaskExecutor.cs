@@ -16,6 +16,7 @@ public sealed class BackupTaskExecutor(
     ReverseIncrementalRepositoryService incrementalRepository,
     BackupRetentionService retentionService,
     DockerConsistencyService dockerConsistency,
+    ProxmoxNativeBackupService proxmoxNative,
     ILogger<BackupTaskExecutor> logger)
 {
     public async Task ExecuteAsync(BackupTask task, CancellationToken cancellationToken)
@@ -70,6 +71,12 @@ public sealed class BackupTaskExecutor(
 
         try
         {
+            if (task.Method == BackupMethod.ProxmoxNative)
+            {
+                await ExecuteProxmoxNativeAsync(task, source, target, sourceInstance, targetInstance, job, route, cancellationToken);
+                return;
+            }
+
             if (BackupMethodPolicy.IsChunked(task.Method))
             {
                 await ExecuteReverseIncrementalAsync(task, source, target, sourceInstance, targetInstance, job, route, cancellationToken);
@@ -164,6 +171,97 @@ public sealed class BackupTaskExecutor(
                 currentJob.TotalBytes);
             logger.LogWarning(ex, "Task {TaskId} ({TaskName}) failed; retry will use the retained checkpoint", task.Id, task.Name);
         }
+    }
+
+    private async Task ExecuteProxmoxNativeAsync(
+        BackupTask task,
+        BackupObject source,
+        BackupObject target,
+        MatBuInstance sourceInstance,
+        MatBuInstance targetInstance,
+        TransferJob job,
+        string route,
+        CancellationToken cancellationToken)
+    {
+        if (source.Kind != ObjectKind.Proxmox || target.Kind != ObjectKind.ProxmoxBackupServer)
+            throw new InvalidOperationException("Proxmox Native benötigt Proxmox VE als Quelle und Proxmox Backup Server als Ziel.");
+        if (sourceInstance.Id != targetInstance.Id)
+            throw new InvalidOperationException("PVE und PBS müssen für einen nativen Job derselben MatBu-Instanz zugeordnet sein.");
+
+        var sourceCredential = store.GetSmbCredential(source.Id);
+        var targetCredential = store.GetSmbCredential(target.Id);
+        var request = new ProxmoxNativeBackupRequest(
+            source.Location,
+            sourceCredential?.Username,
+            sourceCredential?.Password,
+            target.Location,
+            targetCredential?.Username,
+            targetCredential?.Password,
+            SourceSelection.Parse(task.SourceSelectionJson),
+            job.Id);
+        AppendStep(job.Id, "Proxmox Native", "Started", "PVE überträgt die gewählten Gäste direkt und inkrementell in den PBS-Datastore.", sourceInstance.Name, target.Location);
+
+        ProxmoxNativeBackupResult result;
+        if (sourceInstance.Role == InstanceRole.Secondary)
+        {
+            var commandId = commands.Queue(sourceInstance.Id, SecondaryCommandKind.CreateProxmoxNativeBackup, job.TransferId, request);
+            AppendStep(job.Id, "Gateway", "Queued", $"Nativer PBS-Auftrag #{commandId} wurde über die ausgehende Secondary-Verbindung bereitgestellt.", sourceInstance.Name, source.Location);
+            var command = await commands.WaitForCompletionAsync(commandId, TimeSpan.FromMinutes(15), cancellationToken);
+            if (command.State != "Completed") throw new IOException(string.IsNullOrWhiteSpace(command.Error) ? "Die Secondary konnte den nativen PBS-Job nicht abschließen." : command.Error);
+            result = JsonSerializer.Deserialize<ProxmoxNativeBackupResult>(command.ResultJson)
+                ?? throw new InvalidDataException("Die Secondary lieferte kein PBS-Ergebnis.");
+        }
+        else
+        {
+            result = await proxmoxNative.ExecuteAsync(
+                request,
+                _ =>
+                {
+                    MarkJob(job.Id, "Running", 0, null, "PVE → PBS", speed: 0);
+                    return Task.CompletedTask;
+                },
+                cancellationToken);
+        }
+
+        foreach (var snapshot in result.Snapshots)
+            AppendStep(job.Id, "PBS Snapshot", "Completed", $"{snapshot.GuestType.ToUpperInvariant()} {snapshot.GuestId} '{snapshot.GuestName}' wurde als {snapshot.SnapshotPath} katalogisiert.", targetInstance.Name, result.Destination, snapshot.Size, snapshot.Size);
+
+        RecordNativeSnapshot(task, job, result);
+        MarkTask(task.Id, "Gesichert");
+        MarkJob(job.Id, "Completed", result.TotalBytes, result.TotalBytes, result.Destination, speed: 0, resolvedDestination: result.Destination);
+        AppendStep(job.Id, "Retention", "Info", "Native PBS-Retention wird derzeit über die Prune-Regeln des PBS-Datastores verwaltet.", targetInstance.Name, target.Location);
+        AppendStep(job.Id, "Abschluss", "Completed", $"Proxmox-Native-Backup erfolgreich. Weg: {route}. PVE schrieb direkt nach PBS.", $"{sourceInstance.Name} → PBS", result.Destination, result.TotalBytes, result.TotalBytes);
+    }
+
+    private void RecordNativeSnapshot(BackupTask task, TransferJob job, ProxmoxNativeBackupResult result)
+    {
+        store.Update(data =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var snapshotId = store.NextId(data.BackupSnapshots.Select(item => item.Id));
+            data.BackupSnapshots.Add(new BackupSnapshot
+            {
+                Id = snapshotId,
+                TaskId = task.Id,
+                TransferJobId = job.Id,
+                Token = Guid.NewGuid().ToString("N"),
+                Method = BackupMethod.ProxmoxNative,
+                State = "Completed",
+                RootPath = result.Destination,
+                ManifestPath = JsonSerializer.Serialize(result.Snapshots),
+                FileCount = result.Snapshots.Count,
+                TotalBytes = result.TotalBytes,
+                StoredBytes = result.TotalBytes,
+                CreateDate = now,
+                UpdateDate = now
+            });
+            var currentJob = data.TransferJobs.First(item => item.Id == job.Id);
+            currentJob.Method = BackupMethod.ProxmoxNative;
+            currentJob.SnapshotId = snapshotId;
+            currentJob.SourceBytes = result.TotalBytes;
+            currentJob.StoredBytes = result.TotalBytes;
+            currentJob.UpdateDate = now;
+        });
     }
 
     private async Task ExecuteReverseIncrementalAsync(

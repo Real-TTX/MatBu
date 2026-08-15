@@ -18,11 +18,13 @@ public sealed record ProxmoxLocation(Uri Endpoint, string Node, string Storage, 
         query.TryGetValue("storage", out var storage);
         query.TryGetValue("path", out var path);
         query.TryGetValue("verifyTls", out var verifyTlsText);
-        var isAbsolutePath = !string.IsNullOrWhiteSpace(path) && (path!.StartsWith('/') || Path.IsPathFullyQualified(path!));
-        if (string.IsNullOrWhiteSpace(node) || string.IsNullOrWhiteSpace(storage) || !isAbsolutePath)
-            throw new FormatException("Proxmox-Adresse unvollständig. Beispiel: https://pve:8006/?node=pve&storage=local&path=/mnt/proxmox-dump");
+        var hasStorage = !string.IsNullOrWhiteSpace(storage);
+        var hasPath = !string.IsNullOrWhiteSpace(path);
+        var isAbsolutePath = hasPath && (path!.StartsWith('/') || Path.IsPathFullyQualified(path!));
+        if (string.IsNullOrWhiteSpace(node) || hasStorage != hasPath || hasPath && !isAbsolutePath)
+            throw new FormatException("Proxmox-Adresse unvollständig. Native PBS benötigt node; Datei-Backups zusätzlich storage und einen absoluten path.");
         var endpoint = new Uri(uri.GetLeftPart(UriPartial.Authority).TrimEnd('/') + "/");
-        return new ProxmoxLocation(endpoint, node!.Trim(), storage!.Trim(), path!.Trim(), !bool.TryParse(verifyTlsText, out var verifyTls) || verifyTls);
+        return new ProxmoxLocation(endpoint, node!.Trim(), storage?.Trim() ?? "", path?.Trim() ?? "", !bool.TryParse(verifyTlsText, out var verifyTls) || verifyTls);
     }
 }
 
@@ -30,6 +32,8 @@ public sealed record ProxmoxGuest(string Type, int Id, string Name, string Node,
 {
     public string SelectionPath => $"{Type}/{Id}";
 }
+
+public sealed record ProxmoxNativeGuestBackup(string GuestType, int GuestId, string GuestName, DateTimeOffset StartedDate, DateTimeOffset CompletedDate);
 
 public sealed class ProxmoxService(ILogger<ProxmoxService> logger)
 {
@@ -39,7 +43,7 @@ public sealed class ProxmoxService(ILogger<ProxmoxService> logger)
         try
         {
             var settings = ProxmoxLocation.Parse(location);
-            if (!Directory.Exists(settings.ExportPath))
+            if (!string.IsNullOrWhiteSpace(settings.ExportPath) && !Directory.Exists(settings.ExportPath))
                 throw new DirectoryNotFoundException($"Proxmox dump path is not mounted on this MatBu instance: {settings.ExportPath}");
             using var client = CreateClient(settings, tokenId, tokenSecret);
             using var version = await GetDataAsync(client, "api2/json/version", cancellationToken);
@@ -66,6 +70,8 @@ public sealed class ProxmoxService(ILogger<ProxmoxService> logger)
     public async Task<IReadOnlyList<string>> CreateBackupFilesAsync(string location, string? tokenId, string? tokenSecret, IReadOnlyList<string> selectedGuests, CancellationToken cancellationToken)
     {
         var settings = ProxmoxLocation.Parse(location);
+        if (string.IsNullOrWhiteSpace(settings.Storage) || string.IsNullOrWhiteSpace(settings.ExportPath))
+            throw new InvalidOperationException("Für ein Proxmox-Dateibackup müssen storage und der gemountete path konfiguriert sein.");
         if (!Directory.Exists(settings.ExportPath))
             throw new DirectoryNotFoundException($"Der Proxmox-Dump-Pfad ist auf dieser MatBu-Instanz nicht gemountet: {settings.ExportPath}");
         using var client = CreateClient(settings, tokenId, tokenSecret);
@@ -100,6 +106,45 @@ public sealed class ProxmoxService(ILogger<ProxmoxService> logger)
         return files;
     }
 
+    public async Task<IReadOnlyList<ProxmoxNativeGuestBackup>> CreateNativePbsBackupsAsync(
+        string location,
+        string? tokenId,
+        string? tokenSecret,
+        IReadOnlyList<string> selectedGuests,
+        string pveStorage,
+        Func<CancellationToken, Task>? heartbeat,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(pveStorage)) throw new ArgumentException("Die PVE-Storage-ID für PBS fehlt.", nameof(pveStorage));
+        var settings = ProxmoxLocation.Parse(location);
+        using var client = CreateClient(settings, tokenId, tokenSecret);
+        var available = await ListGuestsAsync(client, cancellationToken);
+        var selected = selectedGuests.Count == 0
+            ? available.Where(guest => guest.Node.Equals(settings.Node, StringComparison.OrdinalIgnoreCase)).ToList()
+            : available.Where(guest => selectedGuests.Contains(guest.SelectionPath, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (selected.Count == 0) throw new InvalidOperationException("Keine passende Proxmox-VM oder kein Container wurde ausgewählt.");
+
+        var results = new List<ProxmoxNativeGuestBackup>();
+        foreach (var guest in selected)
+        {
+            if (!guest.Node.Equals(settings.Node, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Guest {guest.Id} läuft auf Node '{guest.Node}', erwartet wird '{settings.Node}'.");
+            var started = DateTimeOffset.UtcNow;
+            using var response = await client.PostAsync($"api2/json/nodes/{Uri.EscapeDataString(settings.Node)}/vzdump", new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["vmid"] = guest.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["storage"] = pveStorage.Trim(),
+                ["mode"] = "snapshot"
+            }), cancellationToken);
+            await EnsureSuccessAsync(response, cancellationToken);
+            using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+            var upid = document.RootElement.GetProperty("data").GetString() ?? throw new InvalidDataException("Proxmox lieferte keine Task-ID.");
+            await WaitForTaskAsync(client, settings.Node, upid, heartbeat, cancellationToken);
+            results.Add(new ProxmoxNativeGuestBackup(guest.Type, guest.Id, guest.Name, started, DateTimeOffset.UtcNow));
+        }
+        return results;
+    }
+
     public static void CleanupBackupFiles(IEnumerable<string> files)
     {
         foreach (var file in files) try { File.Delete(file); } catch { }
@@ -117,7 +162,10 @@ public sealed class ProxmoxService(ILogger<ProxmoxService> logger)
             .OrderBy(guest => guest.Id).ToList();
     }
 
-    private static async Task WaitForTaskAsync(HttpClient client, string node, string upid, CancellationToken cancellationToken)
+    private static Task WaitForTaskAsync(HttpClient client, string node, string upid, CancellationToken cancellationToken) =>
+        WaitForTaskAsync(client, node, upid, null, cancellationToken);
+
+    private static async Task WaitForTaskAsync(HttpClient client, string node, string upid, Func<CancellationToken, Task>? heartbeat, CancellationToken cancellationToken)
     {
         while (true)
         {
@@ -129,6 +177,7 @@ public sealed class ProxmoxService(ILogger<ProxmoxService> logger)
                 if (!string.Equals(exit, "OK", StringComparison.OrdinalIgnoreCase)) throw new IOException($"Proxmox-vzdump endete mit '{exit ?? "unbekannt"}'.");
                 return;
             }
+            if (heartbeat is not null) await heartbeat(cancellationToken);
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         }
     }

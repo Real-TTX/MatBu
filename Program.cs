@@ -20,6 +20,8 @@ builder.Services.AddHostedService<BackupScheduler>();
 builder.Services.AddHostedService<DockerVolumeBackupWorker>();
 builder.Services.AddSingleton<SmbClientService>();
 builder.Services.AddSingleton<ProxmoxService>();
+builder.Services.AddSingleton<ProxmoxBackupServerService>();
+builder.Services.AddSingleton<ProxmoxNativeBackupService>();
 builder.Services.AddSingleton<ObjectConnectivityTester>();
 builder.Services.AddHttpClient(nameof(SecondaryGatewayClient), client => client.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddHttpClient("SecondaryTransfer", client => client.Timeout = TimeSpan.FromMinutes(10));
@@ -317,7 +319,7 @@ app.MapPost("/api/tasks", (BackupTask task, HttpContext context, PersistentStore
     task.SourceSelectionJson = SourceSelection.Serialize(SourceSelection.Parse(task.SourceSelectionJson));
     if (BackupMethodPolicy.IsChunked(task.Method) && task.ChunkSizeMiB is not (4 or 8 or 16 or 32))
         return Results.BadRequest(new { message = "Reverse Incremental benötigt 4, 8, 16 oder 32 MiB Chunkgröße." });
-    if (BackupMethodPolicy.IsChunked(task.Method)) task.Compression = BackupCompression.None;
+    if (BackupMethodPolicy.IsChunked(task.Method) || task.Method == BackupMethod.ProxmoxNative) task.Compression = BackupCompression.None;
     if (task.MaxRetryAttempts is < 1 or > 20 || task.RetryDelayMinutes is < 1 or > 1440)
         return Results.BadRequest(new { message = "Retry-Konfiguration ungültig: 1–20 Versuche und 1–1440 Minuten Basiswartezeit sind erlaubt." });
     var data = store.Read();
@@ -329,6 +331,8 @@ app.MapPost("/api/tasks", (BackupTask task, HttpContext context, PersistentStore
     if (source.Direction == ObjectDirection.Target) return Results.BadRequest(new { message = "Das ausgewählte Objekt kann nicht als Quelle verwendet werden." });
     if (target.Direction == ObjectDirection.Source) return Results.BadRequest(new { message = "Das ausgewählte Objekt kann nicht als Ziel verwendet werden." });
     if (source.Id == target.Id) return Results.BadRequest(new { message = "Quelle und Ziel müssen unterschiedlich sein." });
+    var routeError = BackupRoutePolicy.Validate(task, source, target);
+    if (routeError is not null) return Results.BadRequest(new { message = routeError });
     task.Id = store.NextId(data.Tasks.Select(x => x.Id));
     task.CreateDate = DateTimeOffset.UtcNow;
     task.UpdateDate = task.CreateDate;
@@ -351,7 +355,7 @@ app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, HttpContext contex
     task.SourceSelectionJson = SourceSelection.Serialize(SourceSelection.Parse(task.SourceSelectionJson));
     if (BackupMethodPolicy.IsChunked(task.Method) && task.ChunkSizeMiB is not (4 or 8 or 16 or 32))
         return Results.BadRequest(new { message = "Reverse Incremental benötigt 4, 8, 16 oder 32 MiB Chunkgröße." });
-    if (BackupMethodPolicy.IsChunked(task.Method)) task.Compression = BackupCompression.None;
+    if (BackupMethodPolicy.IsChunked(task.Method) || task.Method == BackupMethod.ProxmoxNative) task.Compression = BackupCompression.None;
     if (task.MaxRetryAttempts is < 1 or > 20 || task.RetryDelayMinutes is < 1 or > 1440)
         return Results.BadRequest(new { message = "Retry-Konfiguration ungültig: 1–20 Versuche und 1–1440 Minuten Basiswartezeit sind erlaubt." });
     var data = store.Read();
@@ -374,6 +378,8 @@ app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, HttpContext contex
     if (source.Direction == ObjectDirection.Target) return Results.BadRequest(new { message = "Das ausgewählte Objekt kann nicht als Quelle verwendet werden." });
     if (target.Direction == ObjectDirection.Source) return Results.BadRequest(new { message = "Das ausgewählte Objekt kann nicht als Ziel verwendet werden." });
     if (source.Id == target.Id) return Results.BadRequest(new { message = "Quelle und Ziel müssen unterschiedlich sein." });
+    var routeError = BackupRoutePolicy.Validate(task, source, target);
+    if (routeError is not null) return Results.BadRequest(new { message = routeError });
     store.Update(data =>
     {
         var target = data.Tasks.First(x => x.Id == id);
@@ -503,7 +509,7 @@ static AppUser? CurrentUser(HttpContext context, PersistentStore store)
     return session is null ? null : data.Users.FirstOrDefault(item => item.Id == session.UserId);
 }
 
-static bool UsesCredentials(ObjectKind kind) => kind is ObjectKind.Smb or ObjectKind.Proxmox;
+static bool UsesCredentials(ObjectKind kind) => kind is ObjectKind.Smb or ObjectKind.Proxmox or ObjectKind.ProxmoxBackupServer;
 
 static string? ValidateConsistency(BackupTask task)
 {

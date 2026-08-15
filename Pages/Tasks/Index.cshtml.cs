@@ -24,7 +24,7 @@ public class IndexModel(PersistentStore store) : AppPageModel(store)
     public string GetInstanceName(long instanceId) => InstanceNames.TryGetValue(instanceId, out var name) ? name : "Unbekannte Instanz";
     public string GetMethodSummary(BackupTask task) => BackupMethodPolicy.IsChunked(task.Method)
         ? $"{BackupMethodPolicy.Label(task.Method)} · {task.ChunkSizeMiB} MiB · {GetSelectionSummary(task)}"
-        : $"Full · {GetSelectionSummary(task)}";
+        : $"{BackupMethodPolicy.Label(task.Method)} · {GetSelectionSummary(task)}";
     private static string GetSelectionSummary(BackupTask task)
     {
         var count = SourceSelection.Parse(task.SourceSelectionJson).Count;

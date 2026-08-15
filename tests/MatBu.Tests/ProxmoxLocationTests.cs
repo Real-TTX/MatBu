@@ -16,6 +16,16 @@ public sealed class ProxmoxLocationTests
         Assert.False(result.VerifyTls);
     }
 
+    [Fact]
+    public void Parse_AllowsNativePbsSourceWithoutDumpMount()
+    {
+        var result = ProxmoxLocation.Parse("https://pve.example:8006/?node=pve-01&verifyTls=false");
+
+        Assert.Equal("pve-01", result.Node);
+        Assert.Equal("", result.Storage);
+        Assert.Equal("", result.ExportPath);
+    }
+
     [Theory]
     [InlineData("https://pve.example:8006/")]
     [InlineData("https://pve.example:8006/?node=pve&storage=backup&path=relative")]

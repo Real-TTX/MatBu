@@ -140,6 +140,20 @@ public class EditModel(
             return ModelState.IsValid;
         }
 
+        if (Input.Kind == ObjectKind.ProxmoxBackupServer)
+        {
+            Input.Direction = ObjectDirection.Target;
+            try { _ = ProxmoxBackupServerLocation.Parse(Input.Location); }
+            catch (FormatException exception) { ModelState.AddModelError("Input.Location", exception.Message); }
+
+            var storedPbsCredential = Id is null ? null : Store.GetSmbCredential(Id.Value);
+            var reusesPbsSecret = storedPbsCredential is not null &&
+                string.Equals(storedPbsCredential.Value.Username, SmbUsername?.Trim(), StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(SmbUsername)) ModelState.AddModelError(nameof(SmbUsername), "Die PBS API Token-ID fehlt.");
+            if (string.IsNullOrEmpty(SmbPassword) && !reusesPbsSecret) ModelState.AddModelError(nameof(SmbPassword), "Das PBS API Token-Secret fehlt.");
+            return ModelState.IsValid;
+        }
+
         if (Input.Kind != ObjectKind.Smb)
             return ModelState.IsValid;
 
@@ -222,5 +236,5 @@ public class EditModel(
 
     private void SetPageMetadata() => ViewData["UserName"] = CurrentUser?.UserName;
 
-    private static bool UsesCredentials(ObjectKind kind) => kind is ObjectKind.Smb or ObjectKind.Proxmox;
+    private static bool UsesCredentials(ObjectKind kind) => kind is ObjectKind.Smb or ObjectKind.Proxmox or ObjectKind.ProxmoxBackupServer;
 }

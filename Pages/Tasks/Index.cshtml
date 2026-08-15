@@ -67,7 +67,10 @@
                         {
                             <form method="post" asp-page-handler="Run" asp-route-id="@item.Id" asp-route-LabelId="@Model.LabelId"><button class="icon-action primary" type="submit" title="Jetzt ausführen" aria-label="@item.Name jetzt ausführen"><svg class="ui-icon"><use href="#icon-play"></use></svg></button></form>
                         }
-                        <a class="icon-action" asp-page="/Restore/Explorer" asp-route-taskId="@item.Id" title="Datei-Explorer" aria-label="Datei-Explorer für @item.Name öffnen"><svg class="ui-icon"><use href="#icon-folder"></use></svg></a>
+                        @if (item.Method != BackupMethod.ProxmoxNative)
+                        {
+                            <a class="icon-action" asp-page="/Restore/Explorer" asp-route-taskId="@item.Id" title="Datei-Explorer" aria-label="Datei-Explorer für @item.Name öffnen"><svg class="ui-icon"><use href="#icon-folder"></use></svg></a>
+                        }
                         @if (Model.CanEdit)
                         {
                             <a class="icon-action" asp-page="/Tasks/Edit" asp-route-id="@item.Id" title="Bearbeiten" aria-label="@item.Name bearbeiten"><svg class="ui-icon"><use href="#icon-pencil"></use></svg></a>
