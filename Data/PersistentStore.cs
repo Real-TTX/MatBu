@@ -79,6 +79,9 @@ public sealed class PersistentStore
         foreach (var item in staleTestDetails) { item.LastTestMessage = item.Detail; item.LastTestDate ??= item.UpdateDate; item.Detail = ""; }
         if (staleTestDetails.Count > 0) db.SaveChanges();
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS SmbCredential (Id INTEGER NOT NULL CONSTRAINT PK_SmbCredential PRIMARY KEY AUTOINCREMENT, ObjectId INTEGER NOT NULL, Username TEXT NOT NULL, ProtectedPassword TEXT NOT NULL, UpdateDate TEXT NOT NULL)");
+        db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS NotificationDelivery (Id INTEGER NOT NULL CONSTRAINT PK_NotificationDelivery PRIMARY KEY AUTOINCREMENT, TransferJobId INTEGER NOT NULL, Event TEXT NOT NULL, Channel TEXT NOT NULL, State TEXT NOT NULL, Attempt INTEGER NOT NULL, NextAttemptDate TEXT NULL, SentDate TEXT NULL, Error TEXT NOT NULL, CreateDate TEXT NOT NULL, CreateUserId INTEGER NOT NULL, UpdateDate TEXT NOT NULL, UpdateUserId INTEGER NOT NULL)");
+        db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS IX_NotificationDelivery_TransferJobId_Event_Channel ON NotificationDelivery (TransferJobId, Event, Channel)");
+        db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_NotificationDelivery_State_NextAttemptDate ON NotificationDelivery (State, NextAttemptDate)");
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS TransferJob (Id INTEGER NOT NULL CONSTRAINT PK_TransferJob PRIMARY KEY AUTOINCREMENT, TaskId INTEGER NOT NULL, State TEXT NOT NULL, BytesTransferred INTEGER NOT NULL, TotalBytes INTEGER NOT NULL, CheckpointPath TEXT NOT NULL, Error TEXT NOT NULL, CreateDate TEXT NOT NULL, UpdateDate TEXT NOT NULL)");
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN Method TEXT NOT NULL DEFAULT 'Full'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN SnapshotId INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
@@ -146,7 +149,8 @@ public sealed class PersistentStore
                 BackupFiles = db.BackupFiles.AsNoTracking().ToList(),
                 BackupFileChunks = db.BackupFileChunks.AsNoTracking().ToList(),
                 BackupChunks = db.BackupChunks.AsNoTracking().ToList(),
-                TransferChunks = db.TransferChunks.AsNoTracking().ToList()
+                TransferChunks = db.TransferChunks.AsNoTracking().ToList(),
+                NotificationDeliveries = db.NotificationDeliveries.AsNoTracking().ToList()
             };
         }
     }
@@ -312,6 +316,7 @@ public sealed class PersistentStore
             db.JobSteps.RemoveRange(db.JobSteps);
             db.TransferJobs.RemoveRange(db.TransferJobs);
             db.SecondaryCommands.RemoveRange(db.SecondaryCommands);
+            db.NotificationDeliveries.RemoveRange(db.NotificationDeliveries);
             db.Instances.AddRange(data.Instances);
             db.Objects.AddRange(data.Objects);
             db.Tasks.AddRange(data.Tasks);
@@ -328,6 +333,7 @@ public sealed class PersistentStore
             db.BackupFileChunks.AddRange(data.BackupFileChunks);
             db.BackupChunks.AddRange(data.BackupChunks);
             db.TransferChunks.AddRange(data.TransferChunks);
+            db.NotificationDeliveries.AddRange(data.NotificationDeliveries);
             db.SaveChanges();
             transaction.Commit();
         }

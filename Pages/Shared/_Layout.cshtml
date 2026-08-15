@@ -49,7 +49,7 @@
                 </div>
                 <div class="sidebar-tools" aria-label="Benutzer und Darstellung">
                     <button class="sidebar-tool theme-toggle" type="button" data-theme-toggle aria-label="Darstellung: System" title="Darstellung: System">◐</button>
-                    <button class="sidebar-tool" type="button" aria-label="Benachrichtigungen" title="Benachrichtigungen"><svg class="ui-icon"><use href="#icon-bell"></use></svg></button>
+                    <a class="sidebar-tool" asp-page="/Settings/Notifications" aria-label="Benachrichtigungen" title="Benachrichtigungen"><svg class="ui-icon"><use href="#icon-bell"></use></svg></a>
                     <form method="post" action="/Logout" class="sidebar-logout-form"><button class="sidebar-tool danger" type="submit" aria-label="Abmelden" title="Abmelden"><svg class="ui-icon"><use href="#icon-logout"></use></svg></button></form>
                 </div>
                 <div class="connection"><i></i><span>System online</span></div>

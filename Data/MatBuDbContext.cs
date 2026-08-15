@@ -22,6 +22,7 @@ public sealed class MatBuDbContext(DbContextOptions<MatBuDbContext> options) : D
     public DbSet<BackupFileChunk> BackupFileChunks => Set<BackupFileChunk>();
     public DbSet<BackupChunk> BackupChunks => Set<BackupChunk>();
     public DbSet<TransferChunk> TransferChunks => Set<TransferChunk>();
+    public DbSet<NotificationDelivery> NotificationDeliveries => Set<NotificationDelivery>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -41,6 +42,7 @@ public sealed class MatBuDbContext(DbContextOptions<MatBuDbContext> options) : D
         modelBuilder.Entity<BackupFileChunk>().ToTable("BackupFileChunk");
         modelBuilder.Entity<BackupChunk>().ToTable("BackupChunk");
         modelBuilder.Entity<TransferChunk>().ToTable("TransferChunk");
+        modelBuilder.Entity<NotificationDelivery>().ToTable("NotificationDelivery");
         modelBuilder.Entity<BackupObject>().Property(x => x.Kind).HasConversion<string>();
         modelBuilder.Entity<BackupObject>().Property(x => x.Direction).HasConversion<string>();
         modelBuilder.Entity<BackupObject>().Property(x => x.Status).HasConversion<string>();
@@ -69,12 +71,14 @@ public sealed class MatBuDbContext(DbContextOptions<MatBuDbContext> options) : D
         modelBuilder.Entity<TransferChunk>().HasIndex(x => new { x.TransferId, x.Sequence }).IsUnique();
         modelBuilder.Entity<TransferChunk>().HasIndex(x => new { x.TransferId, x.State });
         modelBuilder.Entity<TransferChunk>().HasIndex(x => x.Hash);
+        modelBuilder.Entity<NotificationDelivery>().HasIndex(x => new { x.TransferJobId, x.Event, x.Channel }).IsUnique();
+        modelBuilder.Entity<NotificationDelivery>().HasIndex(x => new { x.State, x.NextAttemptDate });
 
         foreach (var type in new[]
                  {
                      typeof(MatBuInstance), typeof(BackupObject), typeof(BackupTask), typeof(JobLabel), typeof(BackupTaskLabel), typeof(AppUser),
                      typeof(UserSession), typeof(JobStep), typeof(BackupSnapshot), typeof(BackupFile),
-                     typeof(BackupFileChunk), typeof(BackupChunk), typeof(TransferChunk)
+                     typeof(BackupFileChunk), typeof(BackupChunk), typeof(TransferChunk), typeof(NotificationDelivery)
                  })
             modelBuilder.Entity(type).Property<DateTimeOffset>("CreateDate").IsRequired();
     }

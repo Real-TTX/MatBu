@@ -222,6 +222,18 @@ public sealed class TransferChunk : AuditedEntity
     public string State { get; set; } = "Pending";
 }
 
+public sealed class NotificationDelivery : AuditedEntity
+{
+    public long TransferJobId { get; set; }
+    public string Event { get; set; } = "";
+    public string Channel { get; set; } = "";
+    public string State { get; set; } = "Pending";
+    public int Attempt { get; set; }
+    public DateTimeOffset? NextAttemptDate { get; set; }
+    public DateTimeOffset? SentDate { get; set; }
+    public string Error { get; set; } = "";
+}
+
 public sealed class AppUser : AuditedEntity
 {
     public string UserName { get; set; } = "";
@@ -254,4 +266,5 @@ public sealed class AppData
     public List<BackupFileChunk> BackupFileChunks { get; set; } = [];
     public List<BackupChunk> BackupChunks { get; set; } = [];
     public List<TransferChunk> TransferChunks { get; set; } = [];
+    public List<NotificationDelivery> NotificationDeliveries { get; set; } = [];
 }

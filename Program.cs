@@ -23,6 +23,7 @@ builder.Services.AddSingleton<ObjectConnectivityTester>();
 builder.Services.AddHttpClient(nameof(SecondaryGatewayClient), client => client.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddHttpClient("SecondaryTransfer", client => client.Timeout = TimeSpan.FromMinutes(10));
 builder.Services.AddHttpClient("PrimaryConnection", client => client.Timeout = TimeSpan.FromMinutes(10));
+builder.Services.AddHttpClient("Notifications", client => client.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddSingleton<SecondaryGatewayClient>();
 builder.Services.AddSingleton<SecondaryCommandService>();
 builder.Services.AddSingleton<ArchiveService>();
@@ -34,6 +35,9 @@ builder.Services.AddSingleton<BackupRetentionService>();
 builder.Services.AddSingleton<RestoreArchiveService>();
 builder.Services.AddSingleton<RestoreExecutionService>();
 builder.Services.AddSingleton<BackupTaskExecutor>();
+builder.Services.AddSingleton<NotificationSettingsStore>();
+builder.Services.AddSingleton<NotificationService>();
+builder.Services.AddHostedService<NotificationDispatcher>();
 builder.Services.AddHostedService<SecondaryConnectionWorker>();
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 

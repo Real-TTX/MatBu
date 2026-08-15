@@ -1,0 +1,67 @@
+@page
+@model MatBu.Pages.Settings.NotificationsModel
+@{ ViewData["Title"] = "Benachrichtigungen"; }
+
+<div class="page-heading">
+    <div><h1>Benachrichtigungen</h1></div>
+    <div class="button-row"><a class="button" asp-page="/Settings/Monitoring">Monitoring API</a></div>
+</div>
+
+@if (Model.Message is not null)
+{
+    <div class="@(Model.MessageIsError ? "login-error" : "notice-success")">@Model.Message</div>
+}
+
+<form method="post" class="notification-form">
+    <div class="settings-grid">
+        <section class="panel form settings-card">
+            <div class="panel-heading"><div><span class="route-label">Kanal</span><h2>Webhook</h2></div><label class="toggle-label"><input asp-for="Input.WebhookEnabled" /> Aktiv</label></div>
+            <div class="field"><label asp-for="Input.WebhookUrl">Webhook-URL</label><input asp-for="Input.WebhookUrl" type="url" placeholder="https://monitoring.example/hooks/matbu" /></div>
+            <p class="settings-help">MatBu sendet JSON mit Status, Job, Route, Größen und Fehlermeldung.</p>
+            <div class="form-actions"><button class="button" type="submit" asp-page-handler="TestWebhook">Webhook testen</button></div>
+        </section>
+
+        <section class="panel form settings-card">
+            <div class="panel-heading"><div><span class="route-label">Kanal</span><h2>E-Mail / SMTP</h2></div><label class="toggle-label"><input asp-for="Input.EmailEnabled" /> Aktiv</label></div>
+            <div class="form-grid">
+                <div class="field"><label asp-for="Input.SmtpHost">SMTP-Host</label><input asp-for="Input.SmtpHost" placeholder="smtp.example.de" /></div>
+                <div class="field"><label asp-for="Input.SmtpPort">Port</label><input asp-for="Input.SmtpPort" type="number" min="1" max="65535" /></div>
+                <div class="field"><label asp-for="Input.SmtpUsername">Benutzername</label><input asp-for="Input.SmtpUsername" autocomplete="username" /></div>
+                <div class="field"><label asp-for="Input.SmtpPassword">Passwort</label><input asp-for="Input.SmtpPassword" type="password" autocomplete="new-password" placeholder="@(Model.HasStoredPassword ? "gespeichert · leer = behalten" : "SMTP-Passwort")" /></div>
+                <div class="field"><label asp-for="Input.MailFrom">Absender</label><input asp-for="Input.MailFrom" type="email" placeholder="matbu@example.de" /></div>
+                <div class="field"><label asp-for="Input.MailRecipients">Empfänger</label><input asp-for="Input.MailRecipients" placeholder="admin@example.de; monitoring@example.de" /></div>
+            </div>
+            <label class="toggle-label inline-toggle"><input asp-for="Input.SmtpUseSsl" /> TLS/SSL verwenden</label>
+            <div class="form-actions"><button class="button" type="submit" asp-page-handler="TestEmail">E-Mail testen</button></div>
+        </section>
+    </div>
+
+    <section class="panel form notification-events">
+        <div class="panel-heading"><div><span class="route-label">Ereignisse</span><h2>Wann benachrichtigen?</h2></div></div>
+        <div class="event-options">
+            <label class="event-option"><input asp-for="Input.NotifyOnFailure" /><span><strong>Fehlgeschlagene Jobs</strong><small>Nach dem endgültigen Fehler eines Backup- oder Restore-Jobs.</small></span></label>
+            <label class="event-option"><input asp-for="Input.NotifyOnSuccess" /><span><strong>Erfolgreiche Jobs</strong><small>Nach erfolgreich abgeschlossenem Backup oder Restore.</small></span></label>
+        </div>
+    </section>
+
+    <div class="form-actions notification-save"><button class="button primary" type="submit" asp-page-handler="Save">Speichern</button><a class="button" asp-page="/Users">Zurück</a></div>
+</form>
+
+<section class="panel compact-list-panel notification-history">
+    <div class="panel-heading"><div><span class="route-label">Protokoll</span><h2>Letzte Zustellungen</h2></div></div>
+    <table class="data-table compact-table">
+        <thead><tr><th>Job</th><th>Ereignis</th><th>Kanal</th><th>Status</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Deliveries)
+        {
+            <tr>
+                <td><div class="cell-stack"><strong class="cell-primary">#@item.JobId · @item.JobName</strong><small class="cell-meta">@item.UpdateDate.ToLocalTime().ToString("dd.MM.yy HH:mm:ss")</small></div></td>
+                <td><div class="cell-stack"><strong class="cell-primary">@(item.Event.EndsWith("Succeeded", StringComparison.Ordinal) ? "Erfolgreich" : "Fehlgeschlagen")</strong><small class="cell-meta">Zustellung #@item.Id</small></div></td>
+                <td>@item.Channel</td>
+                <td><div class="cell-stack"><span class="status @(item.State == "Sent" ? "" : "offline")">@(item.State == "Sent" ? "Gesendet" : "Fehler")</span><small class="cell-meta" title="@item.Error">Versuch @item.Attempt@(string.IsNullOrWhiteSpace(item.Error) ? "" : $" · {item.Error}")</small></div></td>
+            </tr>
+        }
+        @if (Model.Deliveries.Count == 0) { <tr><td colspan="4"><div class="empty">Noch keine Benachrichtigungen versendet.</div></td></tr> }
+        </tbody>
+    </table>
+</section>
