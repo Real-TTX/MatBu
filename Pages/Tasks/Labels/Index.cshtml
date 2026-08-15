@@ -1,0 +1,41 @@
+@page
+@model MatBu.Pages.Tasks.Labels.IndexModel
+@{
+    ViewData["Title"] = "Tags";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+}
+
+<div class="page-heading">
+    <div><p class="eyebrow">Organisation</p><h1>Tags</h1></div>
+    @if (Model.CanEdit) { <a class="button primary" asp-page="/Tasks/Labels/Edit">＋ Tag erstellen</a> }
+</div>
+
+@if (TempData["LabelError"] is string labelError) { <div class="test-result error">@labelError</div> }
+@if (TempData["LabelSuccess"] is string labelSuccess) { <div class="test-result success">@labelSuccess</div> }
+
+<div class="panel compact-list-panel label-list-panel">
+    <table class="data-table compact-table label-table">
+        <thead><tr><th>Tag</th><th class="tag-color-column">Farbe</th><th>Verwendung</th><th class="action-cell">Aktionen</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Items)
+        {
+            <tr>
+                <td><span class="job-tag" style="--tag-color:@item.Color">@item.Name</span></td>
+                <td class="tag-color-column"><code>@item.Color</code></td>
+                <td><span class="cell-meta">@Model.JobCounts.GetValueOrDefault(item.Id) Job(s)</span></td>
+                <td class="action-cell">
+                    @if (Model.CanEdit)
+                    {
+                        <div class="row-actions">
+                            <a class="icon-action" asp-page="/Tasks/Labels/Edit" asp-route-id="@item.Id" title="Bearbeiten" aria-label="@item.Name bearbeiten"><svg class="ui-icon"><use href="#icon-pencil"></use></svg></a>
+                            <form class="destructive-action" method="post" asp-page-handler="Delete" asp-route-id="@item.Id" onsubmit="return confirm('Nicht verwendeten Tag wirklich löschen?')"><button class="icon-action danger" type="submit" title="Löschen" aria-label="@item.Name löschen"><svg class="ui-icon"><use href="#icon-trash"></use></svg></button></form>
+                        </div>
+                    }
+                </td>
+            </tr>
+        }
+        @if (Model.Items.Count == 0) { <tr><td colspan="4"><div class="empty">Noch keine Tags vorhanden.</div></td></tr> }
+        </tbody>
+    </table>
+</div>
+<div class="form-actions"><a class="button" asp-page="/Tasks/Index">Zurück zu Jobs</a></div>

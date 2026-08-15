@@ -1,0 +1,249 @@
+@page
+@model MatBu.Pages.Restore.ExplorerModel
+@using MatBu.Models
+@{
+    ViewData["Title"] = $"Dateien · {Model.TaskName}";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+    var restoreError = TempData["RestoreError"] as string;
+    var restoreSuccess = TempData["RestoreSuccess"] as string;
+}
+
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">Job-Dateien &amp; Versionen</p>
+        <h1>@Model.TaskName</h1>
+        <p>Windows-Explorer-Ansicht mit Zeitachse, Dateiauswahl und Restore in ein Ziel-Volume.</p>
+    </div>
+    <div class="button-row">
+        <a class="button" asp-page="/Tasks/Index">← Zu den Jobs</a>
+        @if (Model.HasVersions)
+        {
+            <a class="button" asp-page="/Jobs/Details" asp-route-id="@Model.Job.Id">Ausführungsprotokoll</a>
+        }
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(restoreError))
+{
+    <div class="test-result error"><strong>Restore fehlgeschlagen</strong><span>@restoreError</span></div>
+}
+@if (!string.IsNullOrWhiteSpace(restoreSuccess))
+{
+    <div class="test-result success"><strong>Restore abgeschlossen</strong><span>@restoreSuccess</span></div>
+}
+
+<div class="restore-layout">
+    <aside class="panel restore-versions restore-timeline">
+        <div class="panel-heading"><div><span class="route-label">Zeitachse</span><h2>Backupversionen</h2></div><span>@Model.Versions.Count</span></div>
+        <nav aria-label="Backupversionen">
+        @foreach (var version in Model.Versions)
+        {
+            <a class="restore-version @(version.Id == Model.Job.Id ? "active" : "")" asp-page="/Restore/Explorer" asp-route-id="@version.Id" asp-route-taskId="@Model.Job.TaskId">
+                <i class="version-dot"></i>
+                <span class="version-copy">
+                    <strong>@version.CreateDate.ToLocalTime().ToString("dd.MM.yyyy")</strong>
+                    <b>@version.CreateDate.ToLocalTime().ToString("HH:mm:ss") Uhr</b>
+                    <small>Ausführung #@version.Id · @version.TargetInstanceName · @Model.FormatBytes(version.SizeBytes)</small>
+                </span>
+            </a>
+        }
+        </nav>
+    </aside>
+
+    @if (!Model.HasVersions)
+    {
+        <section class="restore-browser">
+            <div class="panel restore-no-versions">
+                <span class="restore-empty-icon" aria-hidden="true">▰</span>
+                <div>
+                    <span class="route-label">Datei-Explorer</span>
+                    <h2>Noch keine Backupversion vorhanden</h2>
+                    <p>Sobald dieser Job einmal erfolgreich gelaufen ist, erscheinen hier die gesicherten Ordner und Dateien sowie die Versions-Zeitleiste.</p>
+                </div>
+                <div class="button-row">
+                    @if (Model.CanEdit)
+                    {
+                        <form method="post" asp-page="/Tasks/Index" asp-page-handler="Run" asp-route-id="@Model.TaskId">
+                            <button class="button primary" type="submit">▶ Backup jetzt ausführen</button>
+                        </form>
+                    }
+                    <a class="button" asp-page="/Tasks/Index">← Zurück zu den Jobs</a>
+                </div>
+            </div>
+        </section>
+    }
+    else
+    {
+    <section class="restore-browser">
+        <div class="panel restore-summary">
+            <div><span class="route-label">Gewählte Version</span><strong>@Model.Job.CreateDate.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</strong><small>Ausführung #@Model.Job.Id</small></div>
+            <div><span class="route-label">Backup-Weg</span><strong>@Model.Job.SourceInstanceName → @Model.Job.TargetInstanceName</strong><small>@Model.Job.SourceObjectName → @Model.Job.TargetObjectName</small></div>
+            <div><span class="route-label">Gespeichertes Archiv</span><code>@Model.Job.ResolvedDestination</code></div>
+            <div><span class="route-label">Größe dieser Version</span><strong>@Model.FormatBytes(Model.SelectedVersionBytes)</strong><small>Logischer Dateibestand</small></div>
+            <div><span class="route-label">Belegt inkl. Versionen</span><strong>@Model.FormatBytes(Model.StorageMetrics.TotalWithVersionsBytes)</strong><small>@Model.StorageMetrics.VersionCount Version(en), Metadaten ausgenommen</small></div>
+        </div>
+
+        <form method="get" class="toolbar restore-toolbar">
+            <input type="hidden" name="Id" value="@Model.Job.Id" />
+            <input type="hidden" name="TaskId" value="@Model.Job.TaskId" />
+            <input type="hidden" name="Folder" value="@Model.CurrentFolder" />
+            <input name="Search" value="@Model.Search" placeholder="Dateien und Ordner suchen …" aria-label="Dateien und Ordner suchen" />
+            <button class="button" type="submit">⌕ Suchen</button>
+            @if (!string.IsNullOrWhiteSpace(Model.Search))
+            {
+                <a class="button" asp-page="/Restore/Explorer" asp-route-id="@Model.Job.Id" asp-route-taskId="@Model.Job.TaskId" asp-route-folder="@Model.CurrentFolder">Filter löschen</a>
+            }
+        </form>
+
+        <nav class="restore-breadcrumbs" aria-label="Archivpfad">
+        @foreach (var breadcrumb in Model.Breadcrumbs)
+        {
+            <a asp-page="/Restore/Explorer" asp-route-id="@Model.Job.Id" asp-route-taskId="@Model.Job.TaskId" asp-route-folder="@breadcrumb.Folder">@breadcrumb.Label</a><span>›</span>
+        }
+        </nav>
+
+        @if (!string.IsNullOrWhiteSpace(Model.Error))
+        {
+            <div class="test-result error"><strong>Archiv nicht verfügbar</strong><span>@Model.Error</span></div>
+        }
+        else
+        {
+            <form method="post" asp-page-handler="Restore" class="restore-selection-form">
+                <input type="hidden" asp-for="Id" value="@Model.Job.Id" />
+                <input type="hidden" asp-for="TaskId" value="@Model.Job.TaskId" />
+                <input type="hidden" asp-for="Folder" value="@Model.CurrentFolder" />
+
+                @if (Model.CanRestore)
+                {
+                    <div class="panel restore-destination-card">
+                        <div class="restore-destination-heading">
+                            <div><span class="route-label">Restore-Ziel</span><h2>Ziel und Unterordner</h2></div>
+                            <span class="restore-selection-count" data-selection-count>0 ausgewählt</span>
+                        </div>
+                        @if (Model.RestoreTargets.Count == 0)
+                        {
+                            <div class="test-result error"><strong>Kein Restore-Ziel vorhanden</strong><span>Lege ein zielgeeignetes Object vom Typ „Docker Volume“ oder „Lokaler Ordner“ an.</span></div>
+                        }
+                        else
+                        {
+                            <div class="restore-target-grid">
+                                <div class="field">
+                                    <label asp-for="RestoreTargetId">Ziel-Object / Volume</label>
+                                    <select asp-for="RestoreTargetId" data-restore-target>
+                                    @foreach (var target in Model.RestoreTargets)
+                                    {
+                                        <option value="@target.Id" data-kind="@target.Kind" data-location="@target.Location" data-instance="@target.InstanceName">@target.Name · @target.InstanceName (@target.Kind)</option>
+                                    }
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label asp-for="RestoreFolderName">Neuer Unterordner</label>
+                                    <input asp-for="RestoreFolderName" maxlength="120" data-restore-folder />
+                                </div>
+                            </div>
+                            <div class="restore-path-preview"><span>Wird geschrieben nach</span><code data-restore-preview></code><small>Der Unterordner wird neu angelegt; bestehende Daten außerhalb dieses Ordners werden nicht verändert.</small></div>
+                        }
+                    </div>
+                }
+
+                <div class="panel table-wrap restore-explorer-panel">
+                    <table class="data-table compact-table restore-table">
+                        <thead><tr><th class="select-column"><input type="checkbox" data-select-all aria-label="Alle sichtbaren Einträge auswählen" /></th><th>Name</th><th>Typ</th><th>Größe</th><th>Geändert</th><th>Aktionen</th></tr></thead>
+                        <tbody>
+                        @if (!string.IsNullOrEmpty(Model.CurrentFolder))
+                        {
+                            <tr class="parent-folder-row"><td></td><td><a class="restore-entry folder" asp-page="/Restore/Explorer" asp-route-id="@Model.Job.Id" asp-route-taskId="@Model.Job.TaskId" asp-route-folder="@Model.ParentFolder"><span>↰</span><strong>Übergeordneter Ordner</strong></a></td><td>Ordner</td><td>—</td><td>—</td><td></td></tr>
+                        }
+                        @foreach (var entry in Model.Entries)
+                        {
+                            <tr>
+                                <td class="select-column"><input type="checkbox" name="SelectedPaths" value="@entry.FullPath" data-entry-select aria-label="@entry.Name auswählen" /></td>
+                                <td>
+                                    @if (entry.IsDirectory)
+                                    {
+                                        <a class="restore-entry folder" asp-page="/Restore/Explorer" asp-route-id="@Model.Job.Id" asp-route-taskId="@Model.Job.TaskId" asp-route-folder="@entry.FullPath"><span>▰</span><strong>@entry.Name</strong></a>
+                                    }
+                                    else
+                                    {
+                                        <div class="restore-entry"><span>▤</span><strong>@entry.Name</strong></div>
+                                    }
+                                </td>
+                                <td>@(entry.IsDirectory ? "Dateiordner" : "Datei")</td>
+                                <td>@(entry.IsDirectory ? "—" : FormatSize(entry.Size))</td>
+                                <td>@(entry.ModifiedDate?.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") ?? "—")</td>
+                                <td class="action-cell">
+                                    @if (!entry.IsDirectory)
+                                    {
+                                        <a class="icon-action" asp-page-handler="Download" asp-route-id="@Model.Job.Id" asp-route-taskId="@Model.Job.TaskId" asp-route-folder="@Model.CurrentFolder" asp-route-entryPath="@entry.FullPath" title="Herunterladen" aria-label="@entry.Name herunterladen"><svg class="ui-icon"><use href="#icon-download"></use></svg></a>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                        @if (Model.Entries.Count == 0)
+                        {
+                            <tr><td colspan="6"><div class="empty">In diesem Ordner wurden keine Einträge gefunden.</div></td></tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="form-actions button-row restore-actions">
+                    @if (Model.CanRestore && Model.RestoreTargets.Count > 0)
+                    {
+                        <button class="button primary" type="submit" data-restore-submit disabled>↻ Auswahl wiederherstellen</button>
+                    }
+                    <a class="button" asp-page="/Tasks/Index">← Zurück</a>
+                </div>
+                <p class="restore-note">Ordner können direkt ausgewählt werden. MatBu stellt den gesamten Inhalt mit seiner ursprünglichen Verzeichnisstruktur im angezeigten Restore-Unterordner wieder her.</p>
+            </form>
+        }
+    </section>
+    }
+</div>
+
+@functions {
+    string FormatSize(long bytes) => bytes switch
+    {
+        >= 1024L * 1024 * 1024 => $"{bytes / 1024d / 1024d / 1024d:0.00} GB",
+        >= 1024L * 1024 => $"{bytes / 1024d / 1024d:0.00} MB",
+        >= 1024 => $"{bytes / 1024d:0.0} KB",
+        _ => $"{bytes} Bytes"
+    };
+}
+
+@section Scripts {
+<script>
+(() => {
+    const form = document.querySelector('.restore-selection-form');
+    if (!form) return;
+    const target = form.querySelector('[data-restore-target]');
+    const folder = form.querySelector('[data-restore-folder]');
+    const preview = form.querySelector('[data-restore-preview]');
+    const selectAll = form.querySelector('[data-select-all]');
+    const selections = [...form.querySelectorAll('[data-entry-select]')];
+    const count = form.querySelector('[data-selection-count]');
+    const submit = form.querySelector('[data-restore-submit]');
+
+    const updatePreview = () => {
+        if (!target || !folder || !preview) return;
+        const option = target.selectedOptions[0];
+        const location = option?.dataset.location || '';
+        const instance = option?.dataset.instance || '';
+        const separator = option?.dataset.kind === 'DockerVolume' ? ':/' : (location.includes('\\') ? '\\' : '/');
+        preview.textContent = `${instance} · ${location.replace(/[\\/]+$/, '')}${separator}${folder.value.trim()}`;
+    };
+    const updateSelection = () => {
+        const selected = selections.filter(item => item.checked).length;
+        if (count) count.textContent = `${selected} ausgewählt`;
+        if (submit) submit.disabled = selected === 0;
+        if (selectAll) selectAll.checked = selections.length > 0 && selected === selections.length;
+    };
+    selectAll?.addEventListener('change', () => { selections.forEach(item => item.checked = selectAll.checked); updateSelection(); });
+    selections.forEach(item => item.addEventListener('change', updateSelection));
+    target?.addEventListener('change', updatePreview);
+    folder?.addEventListener('input', updatePreview);
+    updatePreview();
+    updateSelection();
+})();
+</script>
+}

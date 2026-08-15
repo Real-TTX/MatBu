@@ -1,0 +1,45 @@
+@page
+@model MatBu.Pages.UsersModel
+@using MatBu.Models
+@{ ViewData["Title"] = "Benutzer"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
+
+<div class="page-heading">
+    <div><p class="eyebrow">Administration</p><h1>Benutzer</h1><p>Lokale Konten, Rollen und aktive Sitzungen verwalten.</p></div>
+    <div class="button-row"><a class="button" asp-page="/Settings/Monitoring">Monitoring API</a><a class="button primary" asp-page="/Users/Edit">＋ Benutzer erstellen</a></div>
+</div>
+
+<form method="get" class="toolbar compact-toolbar">
+    <input name="Search" value="@Model.Search" placeholder="Benutzer durchsuchen …" />
+    <select name="RoleFilter"><option value="Alle" selected="@(Model.RoleFilter == "Alle")">Alle Rollen</option><option value="Admin" selected="@(Model.RoleFilter == "Admin")">Admin</option><option value="Operator" selected="@(Model.RoleFilter == "Operator")">Operator</option><option value="User" selected="@(Model.RoleFilter == "User")">User</option></select>
+    <select name="Sort"><option value="name" selected="@(Model.Sort == "name")">Name</option><option value="updated" selected="@(Model.Sort == "updated")">Zuletzt geändert</option></select>
+    <button class="button" type="submit">Filtern</button>
+</form>
+
+<div class="panel compact-list-panel">
+    <table class="data-table compact-table users-table">
+        <colgroup><col style="width:31%" /><col style="width:28%" /><col style="width:29%" /><col style="width:12%" /></colgroup>
+        <thead><tr><th>Benutzer</th><th>Rolle &amp; Sitzung</th><th>Audit</th><th class="action-cell">Aktionen</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Items)
+        {
+            var activeSession = Model.ActiveSessionUserIds.Contains(item.Id);
+            <tr>
+                <td><div class="cell-stack"><strong class="cell-primary">@item.UserName</strong><small class="cell-meta">Lokales Konto · ID @item.Id</small></div></td>
+                <td><div class="cell-stack"><strong class="cell-primary">@RoleLabel(item.Role)</strong><small class="cell-meta"><span class="status @(activeSession ? "" : "warning")">@(activeSession ? "Angemeldet" : "Keine aktive Sitzung")</span></small></div></td>
+                <td><div class="cell-stack"><strong class="cell-primary">Angelegt @item.CreateDate.ToLocalTime().ToString("dd.MM.yyyy")</strong><small class="cell-meta">Geändert @item.UpdateDate.ToLocalTime().ToString("dd.MM.yy HH:mm") · User @item.UpdateUserId</small></div></td>
+                <td class="action-cell">
+                    <div class="row-actions">
+                        <a class="icon-action" asp-page="/Users/Edit" asp-route-id="@item.Id" title="Bearbeiten" aria-label="@item.UserName bearbeiten"><svg class="ui-icon"><use href="#icon-pencil"></use></svg></a>
+                        <form class="destructive-action" method="post" asp-page-handler="Delete" asp-route-id="@item.Id" onsubmit="return confirm('Benutzer wirklich löschen?')"><button class="icon-action danger" type="submit" title="Löschen" aria-label="@item.UserName löschen"><svg class="ui-icon"><use href="#icon-trash"></use></svg></button></form>
+                    </div>
+                </td>
+            </tr>
+        }
+        @if (Model.Items.Count == 0) { <tr><td colspan="4"><div class="empty">Keine Benutzer für diesen Filter gefunden.</div></td></tr> }
+        </tbody>
+    </table>
+</div>
+
+@functions {
+    static string RoleLabel(UserRole role) => role switch { UserRole.Admin => "Administrator", UserRole.Operator => "Operator", UserRole.User => "Benutzer", _ => role.ToString() };
+}

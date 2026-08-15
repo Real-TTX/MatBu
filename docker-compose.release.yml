@@ -1,0 +1,26 @@
+services:
+  matbu:
+    image: matbu:latest
+    restart: unless-stopped
+    ports:
+      - "9293:9293"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      MATBU_DATA_PATH: /data
+    volumes:
+      - matbu-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  matbu-worker:
+    image: matbu:latest
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      MATBU_DATA_PATH: /data
+      MATBU_DOCKER_WORKER: "true"
+    volumes:
+      - matbu-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  matbu-data:

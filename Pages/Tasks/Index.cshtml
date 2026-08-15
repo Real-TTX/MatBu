@@ -1,0 +1,88 @@
+@page
+@model MatBu.Pages.Tasks.IndexModel
+@{
+    ViewData["Title"] = "Jobs";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+}
+
+<div class="page-heading">
+    <div><p class="eyebrow">Backup-Planung</p><h1>Jobs</h1><p>Backup-Wege, Zeitpläne, Versionen und Retention verwalten.</p></div>
+    @if (Model.CanEdit)
+    {
+        <div class="button-row">
+            <a class="button" asp-page="/Tasks/Labels/Index">Tags verwalten</a>
+            <a class="button primary" asp-page="/Tasks/Edit">＋ Job erstellen</a>
+        </div>
+    }
+</div>
+
+@await Html.PartialAsync("_JobTabs")
+
+@if (TempData["TaskMessage"] is string taskMessage)
+{
+    <div class="test-result error"><strong>Dateien noch nicht verfügbar</strong><span>@taskMessage</span></div>
+}
+
+<form method="get" class="toolbar compact-toolbar">
+    <input name="Search" value="@Model.Search" placeholder="Jobs durchsuchen …" />
+    <select name="StatusFilter"><option value="Alle" selected="@(Model.StatusFilter == "Alle" || string.IsNullOrEmpty(Model.StatusFilter))">Alle Status</option><option value="Bereit" selected="@(Model.StatusFilter == "Bereit")">Bereit</option><option value="Geplant" selected="@(Model.StatusFilter == "Geplant")">Geplant</option><option value="Läuft" selected="@(Model.StatusFilter == "Läuft")">Läuft</option><option value="Wartet auf Wiederholung" selected="@(Model.StatusFilter == "Wartet auf Wiederholung")">Wartet auf Wiederholung</option><option value="Gesichert" selected="@(Model.StatusFilter == "Gesichert")">Gesichert</option><option value="Fehler" selected="@(Model.StatusFilter == "Fehler")">Fehler</option></select>
+    <select name="LabelId"><option value="">Alle Tags</option>@foreach (var label in Model.JobLabels) { <option value="@label.Id" selected="@(Model.LabelId == label.Id)">@label.Name</option> }</select>
+    <select name="Sort"><option value="name" selected="@(Model.Sort == "name")">Name</option><option value="updated" selected="@(Model.Sort == "updated")">Zuletzt geändert</option></select>
+    <button class="button" type="submit">Filtern</button>
+</form>
+
+<div class="panel compact-list-panel">
+    <table class="data-table compact-table task-table">
+        <colgroup><col style="width:23%" /><col style="width:33%" /><col style="width:30%" /><col style="width:14%" /></colgroup>
+        <thead><tr><th>Job &amp; Plan</th><th>Backup-Weg</th><th>Zustand &amp; Speicher</th><th class="action-cell">Aktionen</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Items)
+        {
+            var source = Model.Objects.FirstOrDefault(x => x.Id == item.SourceId);
+            var target = Model.Objects.FirstOrDefault(x => x.Id == item.TargetId);
+            var hasVersion = Model.LatestRestoreVersionIds.TryGetValue(item.Id, out var latestVersionId);
+            var sourceName = source?.Name ?? $"Object #{item.SourceId}";
+            var targetName = target?.Name ?? $"Object #{item.TargetId}";
+            var sourceInstance = source is null ? "Unbekannt" : Model.GetInstanceName(source.InstanceId);
+            var targetInstance = target is null ? "Unbekannt" : Model.GetInstanceName(target.InstanceId);
+            var storage = Model.GetStorage(item.Id);
+            <tr>
+                <td><div class="cell-stack"><strong class="cell-primary">@item.Name</strong>@if (Model.GetLabels(item.Id).Count > 0) { <div class="job-tags">@foreach (var label in Model.GetLabels(item.Id)) { <span class="job-tag" style="--tag-color:@label.Color">@label.Name</span> }</div> }<small class="cell-meta">@Model.GetMethodSummary(item) · @MatBu.Services.BackupSchedule.Normalize(item.Schedule) · Aufbewahrung @item.Retention</small></div></td>
+                <td>
+                    <div class="cell-stack">
+                        <div class="route-compact"><span>@sourceName</span><svg class="ui-icon"><use href="#icon-arrow"></use></svg><span>@targetName</span></div>
+                        <small class="cell-meta">@sourceInstance → @targetInstance</small>
+                    </div>
+                </td>
+                <td>
+                    <div class="cell-stack">
+                        <div class="cell-status" title="@(item.LastRun is null ? "Noch kein Lauf" : $"Letzter Lauf {item.LastRun.Value.ToLocalTime():dd.MM.yy HH:mm}")"><span class="status @(item.State == "Fehler" ? "offline" : item.State is "Geplant" or "Wartet auf Wiederholung" ? "warning" : "")">@item.State</span><span class="cell-meta">@(hasVersion ? $"Version #{latestVersionId}" : "keine Version")</span></div>
+                        <small class="cell-meta">@(item.NextRetryDate is not null ? $"Nächster Retry {item.NextRetryDate.Value.ToLocalTime():dd.MM.yy HH:mm:ss}" : item.Enabled && item.NextRunDate is not null ? $"Nächster Lauf {item.NextRunDate.Value.ToLocalTime():dd.MM.yy HH:mm}" : "Keine automatische Ausführung")</small>
+                        <small class="cell-meta" title="Aktuelle Backupgröße und belegter Speicher inklusive Versionen">@(storage.HasBackup ? $"Aktuell {Model.FormatBytes(storage.CurrentBytes)} · mit Versionen {Model.FormatBytes(storage.TotalWithVersionsBytes)}" : "Noch keine Backupgröße")</small>
+                    </div>
+                </td>
+                <td class="action-cell">
+                    <div class="row-actions">
+                        @if (Model.CanEdit)
+                        {
+                            <form method="post" asp-page-handler="Run" asp-route-id="@item.Id" asp-route-LabelId="@Model.LabelId"><button class="icon-action primary" type="submit" title="Jetzt ausführen" aria-label="@item.Name jetzt ausführen"><svg class="ui-icon"><use href="#icon-play"></use></svg></button></form>
+                        }
+                        <a class="icon-action" asp-page="/Restore/Explorer" asp-route-taskId="@item.Id" title="Datei-Explorer" aria-label="Datei-Explorer für @item.Name öffnen"><svg class="ui-icon"><use href="#icon-folder"></use></svg></a>
+                        @if (Model.CanEdit)
+                        {
+                            <a class="icon-action" asp-page="/Tasks/Edit" asp-route-id="@item.Id" title="Bearbeiten" aria-label="@item.Name bearbeiten"><svg class="ui-icon"><use href="#icon-pencil"></use></svg></a>
+                            <form class="destructive-action" method="post" asp-page-handler="Delete" asp-route-id="@item.Id" asp-route-LabelId="@Model.LabelId" onsubmit="return confirm('Job wirklich löschen?')"><button class="icon-action danger" type="submit" title="Löschen" aria-label="@item.Name löschen"><svg class="ui-icon"><use href="#icon-trash"></use></svg></button></form>
+                        }
+                    </div>
+                </td>
+            </tr>
+        }
+        @if (Model.Items.Count == 0) { <tr><td colspan="4"><div class="empty">Keine Jobs für diesen Filter gefunden.</div></td></tr> }
+        </tbody>
+    </table>
+</div>
+
+@if (Model.TotalPages > 1)
+{
+    <div class="pagination">@for (var p = 1; p <= Model.TotalPages; p++) { <a class="@(p == Model.PageNumber ? "active" : "")" asp-page="/Tasks/Index" asp-route-LabelId="@Model.LabelId" asp-route-Search="@Model.Search" asp-route-StatusFilter="@Model.StatusFilter" asp-route-Sort="@Model.Sort" asp-route-PageNumber="@p">@p</a> }</div>
+}

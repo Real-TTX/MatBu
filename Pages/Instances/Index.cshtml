@@ -1,0 +1,50 @@
+@page
+@model MatBu.Pages.Instances.IndexModel
+@using MatBu.Models
+@{ ViewData["Title"] = "Instanzen"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
+
+<div class="page-heading">
+    <div><p class="eyebrow">Gateway</p><h1>Instanzen</h1><p>Primary und firewallfreundlich verbundene Secondary-Instanzen verwalten.</p></div>
+    @if (Model.CanEdit) { <a class="button primary" asp-page="/Instances/Edit">＋ Instanz erstellen</a> }
+</div>
+
+<form method="get" class="toolbar compact-toolbar">
+    <input name="Search" value="@Model.Search" placeholder="Instanzen oder Endpoints durchsuchen …" />
+    <select name="RoleFilter"><option value="Alle" selected="@(Model.RoleFilter == "Alle")">Alle Rollen</option><option value="Primary" selected="@(Model.RoleFilter == "Primary")">Primary</option><option value="Secondary" selected="@(Model.RoleFilter == "Secondary")">Secondary</option></select>
+    <select name="StatusFilter"><option value="Alle" selected="@(Model.StatusFilter == "Alle")">Alle Status</option><option value="Online" selected="@(Model.StatusFilter == "Online")">Online</option><option value="Offline" selected="@(Model.StatusFilter == "Offline")">Offline</option><option value="Unknown" selected="@(Model.StatusFilter == "Unknown")">Unbekannt</option></select>
+    <select name="Sort"><option value="name" selected="@(Model.Sort == "name")">Name</option><option value="updated" selected="@(Model.Sort == "updated")">Zuletzt geändert</option></select>
+    <button class="button" type="submit">Filtern</button>
+</form>
+
+<div class="panel compact-list-panel">
+    <table class="data-table compact-table instances-table">
+        <colgroup><col style="width:25%" /><col style="width:43%" /><col style="width:20%" /><col style="width:12%" /></colgroup>
+        <thead><tr><th>Instanz</th><th>Verbindung &amp; Kontakt</th><th>Zustand</th><th class="action-cell">Aktionen</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Items)
+        {
+            var isLocalPrimary = item.Role == InstanceRole.Primary && string.IsNullOrWhiteSpace(item.Endpoint);
+            var effectiveOnline = isLocalPrimary ||
+                (item.Enabled && item.Status == InstanceStatus.Online && item.LastSeenDate >= DateTimeOffset.UtcNow.AddSeconds(-30));
+            <tr>
+                <td><div class="cell-stack"><strong class="cell-primary">@item.Name</strong><small class="cell-meta">@item.Role · @(item.Enabled ? "aktiviert" : "deaktiviert")</small></div></td>
+                <td><div class="cell-stack"><strong class="cell-primary" title="@item.Endpoint">@(string.IsNullOrWhiteSpace(item.Endpoint) ? "Lokale Instanz" : item.Endpoint)</strong><small class="cell-meta" title="@item.LastMessage">@(item.LastSeenDate is null ? (isLocalPrimary ? "Direkt auf diesem Host" : "Noch kein Kontakt") : $"Kontakt {item.LastSeenDate.Value.ToLocalTime():dd.MM.yy HH:mm:ss}")@(string.IsNullOrWhiteSpace(item.LastMessage) ? "" : $" · {item.LastMessage}")</small></div></td>
+                <td><div class="cell-stack"><div class="cell-status"><span class="status @(!effectiveOnline ? item.Status == InstanceStatus.Offline ? "offline" : "warning" : "")">@(effectiveOnline ? "Online" : item.Status == InstanceStatus.Unknown ? "Unbekannt" : item.Status)</span></div><small class="cell-meta">@(item.Role == InstanceRole.Secondary ? "Verbindung von Secondary → Primary" : "Primary Installation")</small></div></td>
+                <td class="action-cell">
+                    @if (Model.CanEdit)
+                    {
+                        <div class="row-actions">
+                            <a class="icon-action" asp-page="/Instances/Edit" asp-route-id="@item.Id" title="Bearbeiten" aria-label="@item.Name bearbeiten"><svg class="ui-icon"><use href="#icon-pencil"></use></svg></a>
+                            @if (item.Id != 1)
+                            {
+                                <form class="destructive-action" method="post" asp-page-handler="Delete" asp-route-id="@item.Id" onsubmit="return confirm('Instanz wirklich löschen?')"><button class="icon-action danger" type="submit" title="Löschen" aria-label="@item.Name löschen"><svg class="ui-icon"><use href="#icon-trash"></use></svg></button></form>
+                            }
+                        </div>
+                    }
+                </td>
+            </tr>
+        }
+        @if (Model.Items.Count == 0) { <tr><td colspan="4"><div class="empty">Keine Instanzen für diesen Filter gefunden.</div></td></tr> }
+        </tbody>
+    </table>
+</div>

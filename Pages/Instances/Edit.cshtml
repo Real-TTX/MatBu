@@ -1,0 +1,15 @@
+@page
+@model MatBu.Pages.Instances.EditModel
+@{ ViewData["Title"] = Model.Id is null ? "Instanz erstellen" : "Instanz bearbeiten"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
+<div class="page-heading"><div><p class="eyebrow">Gateway</p><h1>@ViewData["Title"]</h1><p>Verwalte die ausgehende Reverse-Verbindung einer Secondary-Instanz.</p></div></div>
+<form method="post" class="panel form">
+    @if (Model.Error is not null) { <div class="login-error">@Model.Error</div> }
+    <div class="form-grid">
+        <div class="field"><label asp-for="Input.Name">Name</label><input asp-for="Input.Name" required /></div>
+        <div class="field"><label asp-for="Input.Role">Rolle</label><select asp-for="Input.Role"><option value="Primary">Primary</option><option value="Secondary">Secondary</option></select></div>
+        <div class="field" style="grid-column:1/-1"><label asp-for="Input.Endpoint">Primary-Endpunkt (Reverse-Verbindung)</label><input asp-for="Input.Endpoint" placeholder="https://primary.example.local:9293" /><small>Die Secondary baut die Verbindung ausgehend zur Primary auf. Auf der Secondary muss kein eingehender Port veröffentlicht werden.</small></div>
+        <div class="field" style="grid-column:1/-1"><label asp-for="InstanceToken">Instance-Token</label><input asp-for="InstanceToken" type="password" autocomplete="new-password" placeholder="leer = unverändert" /><small>Das Token muss auf der Secondary als MATBU_INSTANCE_TOKEN gesetzt sein.</small></div>
+        <div class="field"><label><input asp-for="Input.Enabled" /> Aktiviert</label></div>
+    </div>
+    <div class="form-actions"><button class="button primary" type="submit">Speichern</button><a class="button" asp-page="/Instances/Index">Zurück</a></div>
+</form>

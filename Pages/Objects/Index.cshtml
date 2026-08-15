@@ -1,0 +1,55 @@
+@page
+@model MatBu.Pages.Objects.IndexModel
+@using MatBu.Models
+@{ ViewData["Title"] = "Objects"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
+
+<div class="page-heading">
+    <div><p class="eyebrow">Infrastruktur</p><h1>Objects</h1><p>Quellen, Ziele, Docker-Volumes und Netzwerkpfade verwalten.</p></div>
+    @if (Model.CanEdit) { <a class="button primary" asp-page="/Objects/Edit">＋ Object erstellen</a> }
+</div>
+
+<form method="get" class="toolbar compact-toolbar">
+    <input name="Search" value="@Model.Search" placeholder="Objects oder Pfade durchsuchen …" />
+    <select name="KindFilter"><option value="Alle" selected="@(Model.KindFilter == "Alle" || string.IsNullOrEmpty(Model.KindFilter))">Alle Typen</option><option value="Smb" selected="@(Model.KindFilter == "Smb")">SMB</option><option value="LocalFolder" selected="@(Model.KindFilter == "LocalFolder")">Lokaler Ordner</option><option value="DockerVolume" selected="@(Model.KindFilter == "DockerVolume")">Docker Volume</option><option value="MatBuSlave" selected="@(Model.KindFilter == "MatBuSlave")">MatBu Slave</option></select>
+    <select name="Sort"><option value="name" selected="@(Model.Sort == "name")">Name</option><option value="updated" selected="@(Model.Sort == "updated")">Zuletzt geändert</option></select>
+    <button class="button" type="submit">Filtern</button>
+</form>
+
+<div class="panel compact-list-panel">
+    <table class="data-table compact-table objects-table">
+        <colgroup><col style="width:27%" /><col style="width:42%" /><col style="width:20%" /><col style="width:11%" /></colgroup>
+        <thead><tr><th>Object</th><th>Speicherort &amp; Instanz</th><th>Zustand &amp; Test</th><th class="action-cell">Aktionen</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Items)
+        {
+            <tr>
+                <td><div class="cell-stack"><strong class="cell-primary">@item.Name</strong><small class="cell-meta">@KindLabel(item.Kind) · @DirectionLabel(item.Direction)</small></div></td>
+                <td><div class="cell-stack"><strong class="cell-primary location-meta" title="@item.Location">@item.Location</strong><small class="cell-meta">@Model.GetInstanceLabel(item.InstanceId)</small></div></td>
+                <td>
+                    <div class="cell-stack">
+                        <div class="cell-status"><span class="status @(item.Status == ObjectStatus.Healthy ? "" : item.Status == ObjectStatus.Offline ? "offline" : "warning")">@(item.Status == ObjectStatus.Healthy ? "Erreichbar" : item.Status)</span></div>
+                        <small class="cell-meta" title="@item.LastTestMessage">@(item.LastTestDate is null ? "Noch nicht getestet" : $"Test {item.LastTestDate.Value.ToLocalTime():dd.MM.yy HH:mm}")@(string.IsNullOrWhiteSpace(item.LastTestMessage) ? "" : $" · {item.LastTestMessage}")</small>
+                    </div>
+                </td>
+                <td class="action-cell">
+                    @if (Model.CanEdit)
+                    {
+                        <div class="row-actions">
+                            <a class="icon-action" asp-page="/Objects/Edit" asp-route-id="@item.Id" title="Bearbeiten und Verbindung testen" aria-label="@item.Name bearbeiten"><svg class="ui-icon"><use href="#icon-pencil"></use></svg></a>
+                            <form class="destructive-action" method="post" asp-page-handler="Delete" asp-route-id="@item.Id" onsubmit="return confirm('Object wirklich löschen?')"><button class="icon-action danger" type="submit" title="Löschen" aria-label="@item.Name löschen"><svg class="ui-icon"><use href="#icon-trash"></use></svg></button></form>
+                        </div>
+                    }
+                </td>
+            </tr>
+        }
+        @if (Model.Items.Count == 0) { <tr><td colspan="4"><div class="empty">Keine Objects für diesen Filter gefunden.</div></td></tr> }
+        </tbody>
+    </table>
+</div>
+
+@if (Model.TotalPages > 1) { <div class="pagination">@for (var p = 1; p <= Model.TotalPages; p++) { <a class="@(p == Model.PageNumber ? "active" : "")" asp-page="/Objects/Index" asp-route-Search="@Model.Search" asp-route-KindFilter="@Model.KindFilter" asp-route-Sort="@Model.Sort" asp-route-PageNumber="@p">@p</a> }</div> }
+
+@functions {
+    static string KindLabel(ObjectKind kind) => kind switch { ObjectKind.Smb => "SMB", ObjectKind.LocalFolder => "Lokaler Ordner", ObjectKind.DockerVolume => "Docker Volume", ObjectKind.MatBuSlave => "MatBu Slave", _ => kind.ToString() };
+    static string DirectionLabel(ObjectDirection direction) => direction switch { ObjectDirection.Source => "Quelle", ObjectDirection.Target => "Ziel", ObjectDirection.Both => "Quelle & Ziel", _ => direction.ToString() };
+}

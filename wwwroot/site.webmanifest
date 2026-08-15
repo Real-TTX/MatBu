@@ -1,0 +1,23 @@
+{
+  "name": "MatBu Backup & Sync",
+  "short_name": "MatBu",
+  "description": "Backup- und Synchronisationsserver für lokale und entfernte Instanzen.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f9f8",
+  "theme_color": "#0b7f8a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/branding/matbu-app-icon.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+@page
+@model MatBu.Pages.JobsModel
+@using MatBu.Models
+@{
+    ViewData["Title"] = "Historie";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+}
+
+<div class="page-heading">
+    <div><p class="eyebrow">Ausführungen</p><h1>Historie</h1><p>Gelaufene Jobs mit Backup-Weg, Ziel, Live-Fortschritt und Ergebnis.</p></div>
+</div>
+
+@await Html.PartialAsync("_JobTabs")
+
+<form method="get" class="toolbar compact-toolbar">
+    <input name="Search" value="@Model.Search" placeholder="Historie, Jobs, Objects oder Ziele durchsuchen …" />
+    <select name="StatusFilter">
+        @foreach (var state in new[] { "Alle", "Running", "Completed", "Fehler" })
+        {
+            <option value="@state" selected="@(Model.StatusFilter == state)">@state</option>
+        }
+    </select>
+    <select name="LabelId"><option value="">Alle Tags</option>@foreach (var label in Model.JobLabels) { <option value="@label.Id" selected="@(Model.LabelId == label.Id)">@label.Name</option> }</select>
+    <select name="Sort"><option value="updated" selected="@(Model.Sort == "updated")">Zuletzt aktualisiert</option><option value="task" selected="@(Model.Sort == "task")">Job</option></select>
+    <button class="button" type="submit">Filtern</button>
+</form>
+
+<div class="panel compact-list-panel">
+    <table class="data-table compact-table job-table">
+        <colgroup><col style="width:17%" /><col style="width:27%" /><col style="width:20%" /><col style="width:20%" /><col style="width:10%" /><col style="width:6%" /></colgroup>
+        <thead><tr><th>Ausführung</th><th>Weg &amp; tatsächliches Ziel</th><th>Status &amp; Fortschritt</th><th>Daten &amp; Effizienz</th><th>Zeitpunkt</th><th class="action-cell">Aktionen</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Items)
+        {
+            var progress = item.TotalBytes == 0 ? 0 : (int)Math.Clamp(item.BytesTransferred * 100 / item.TotalBytes, 0, 100);
+            <tr data-job-id="@item.Id">
+                <td><div class="cell-stack"><strong class="cell-primary">@Model.GetTaskName(item)</strong>@if (Model.GetLabels(item).Count > 0) { <div class="job-tags">@foreach (var label in Model.GetLabels(item)) { <span class="job-tag" style="--tag-color:@label.Color">@label.Name</span> }</div> }<small class="cell-meta">#@item.Id · @Model.GetMethodName(item) · @(item.RetentionExpired ? "Version abgelaufen" : $"Snapshot {Model.GetSnapshotLabel(item)}")</small></div></td>
+                <td data-job-destination>
+                    <div class="cell-stack">
+                        <div class="route-compact"><span>@Model.GetSourceObjectName(item)</span><svg class="ui-icon"><use href="#icon-arrow"></use></svg><span>@Model.GetTargetObjectName(item)</span></div>
+                        <small class="cell-meta" title="@Model.GetDestination(item)">@Model.GetSourceInstanceName(item) → @Model.GetTargetInstanceName(item) · <code>@Model.GetDestination(item)</code></small>
+                    </div>
+                </td>
+                <td data-job-state>
+                    <div class="cell-stack">
+                        <div class="cell-status"><span class="status @StatusClass(item.State)">@item.State</span><strong data-job-progress data-job-progress-mode="compact">@progress%</strong></div>
+                        <div class="compact-progress"><div class="job-progress"><div data-job-bar style="width:@progress%"></div></div><small class="compact-live-meta"><span data-job-speed>@FormatSpeed(item.SpeedBytesPerSecond)</span><span data-job-remaining>@FormatRemaining(item.BytesTransferred, item.TotalBytes, item.SpeedBytesPerSecond)</span></small></div>
+                    </div>
+                </td>
+                <td>
+                    <div class="cell-stack">
+                        <span class="cell-meta" data-job-sizes>Quelle @Model.FormatBytes(item.SourceBytes) · gespeichert @Model.FormatBytes(item.StoredBytes)</span>
+                        <small class="cell-meta" data-job-efficiency>@(item.Method == BackupMethod.Full ? $"{CompressionName(item.Compression)} · geschätzt {Model.FormatBytes(item.EstimatedStoredBytes)} · Rate {CompressionRate(item)}" : $"Wiederverwendet {Model.FormatBytes(item.ReusedBytes)} · Effizienz {Model.FormatEfficiency(item)}")</small>
+                    </div>
+                </td>
+                <td><div class="cell-stack"><strong class="cell-primary" data-job-updated>@item.UpdateDate.ToLocalTime().ToString("dd.MM.yy HH:mm:ss")</strong><small class="cell-meta">Start @item.CreateDate.ToLocalTime().ToString("dd.MM.yy HH:mm")</small></div></td>
+                <td class="action-cell">
+                    <div class="row-actions">
+                        <a class="icon-action primary" asp-page="/Jobs/Details" asp-route-id="@item.Id" title="Protokoll und Details" aria-label="Ausführung @item.Id öffnen"><svg class="ui-icon"><use href="#icon-log"></use></svg></a>
+                        @if (item.State == "Fehler" && item.TaskId > 0 && Model.CurrentUser?.Role != UserRole.User)
+                        {
+                            <form method="post" asp-page-handler="Retry" asp-route-taskId="@item.TaskId" asp-route-LabelId="@Model.LabelId"><button class="icon-action" type="submit" title="Wiederholen" aria-label="Ausführung @item.Id wiederholen"><svg class="ui-icon"><use href="#icon-retry"></use></svg></button></form>
+                        }
+                    </div>
+                </td>
+            </tr>
+        }
+        @if (Model.Items.Count == 0) { <tr><td colspan="6"><div class="empty">Keine Ausführungen für diesen Filter gefunden.</div></td></tr> }
+        </tbody>
+    </table>
+</div>
+
+@if (Model.TotalPages > 1)
+{
+    <nav class="pagination" aria-label="Seitennavigation">
+        @for (var pageNumber = 1; pageNumber <= Model.TotalPages; pageNumber++)
+        {
+            <a class="@(pageNumber == Model.PageNumber ? "active" : "")" asp-route-PageNumber="@pageNumber" asp-route-LabelId="@Model.LabelId" asp-route-Search="@Model.Search" asp-route-StatusFilter="@Model.StatusFilter" asp-route-Sort="@Model.Sort">@pageNumber</a>
+        }
+    </nav>
+}
+
+@functions {
+    static string StatusClass(string state) => state is "Fehler" or "Failed" ? "offline" : state is "Running" or "Queued" ? "warning" : "";
+    string FormatSpeed(long value) => value <= 0 ? "—" : value >= 1024 * 1024 ? $"{value / 1024d / 1024d:0.0} MB/s" : $"{value / 1024d:0.0} KB/s";
+    string CompressionName(BackupCompression value) => value switch { BackupCompression.Fast => "Brotli schnell", BackupCompression.Balanced => "Brotli ausgewogen", BackupCompression.Maximum => "Brotli maximal", _ => "Unkomprimiert" };
+    string CompressionRate(TransferJob job) => job.SourceBytes <= 0 ? "—" : $"{job.StoredBytes * 100d / job.SourceBytes:0.0}%";
+    string FormatRemaining(long bytes, long total, long speed)
+    {
+        if (total <= 0 || bytes >= total || speed <= 0) return total > 0 && bytes >= total ? "Fertig" : "—";
+        var seconds = (long)Math.Ceiling((double)(total - bytes) / speed);
+        var days = seconds / 86400; seconds %= 86400;
+        var hours = seconds / 3600; seconds %= 3600;
+        var minutes = seconds / 60; seconds %= 60;
+        return days > 0 ? $"{days}T {hours}Std" : hours > 0 ? $"{hours}Std {minutes}Min" : minutes > 0 ? $"{minutes}Min {seconds}Sek" : $"{seconds}Sek";
+    }
+}
+
+@section Scripts { <script src="~/jobs-live.js" asp-append-version="true"></script> }

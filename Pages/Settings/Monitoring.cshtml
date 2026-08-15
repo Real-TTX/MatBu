@@ -1,0 +1,5 @@
+@page
+@model MatBu.Pages.Settings.MonitoringModel
+@{ ViewData["Title"] = "Monitoring API"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
+<div class="page-heading"><div><p class="eyebrow">Administration</p><h1>Monitoring API</h1><p>Token für externe Monitoring-Software verwalten.</p></div></div>
+<div class="panel form"><div class="field"><label>Monitoring-Token</label><input value="@Model.Token" readonly spellcheck="false" /></div><p class="login-copy">Health-Endpunkt: <code>/api/monitoring/health</code><br />Header: <code>X-MatBu-Token</code></p>@if (Model.Message is not null) { <div class="login-copy">@Model.Message</div> }<div class="form-actions"><form method="post" asp-page-handler="Regenerate"><button class="button danger" type="submit">Token neu erzeugen</button></form></div></div>

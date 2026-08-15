@@ -1,0 +1,170 @@
+@page
+@model MatBu.Pages.IndexModel
+@using MatBu.Models
+@{
+    ViewData["Title"] = "Dashboard";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+}
+
+<div class="page-heading dashboard-heading">
+    <div>
+        <p class="eyebrow">Dashboard</p>
+        <h1>@Model.Greeting, @Model.CurrentUser!.UserName</h1>
+        <p>Echter Laufzeitstatus deiner Jobs, Backupversionen, Instanzen und Restore-Ausführungen.</p>
+    </div>
+    <div class="button-row">
+        @if (Model.CanEdit) { <a class="button primary" asp-page="/Tasks/Edit">＋ Job erstellen</a> }
+        <a class="button" asp-page="/Jobs">▤ Historie</a>
+    </div>
+</div>
+
+<div class="dashboard-stack">
+    <section class="stats dashboard-stats" aria-label="Backup-Kennzahlen">
+        <div class="stat dashboard-stat">
+            <div class="stat-top"><span class="stat-icon">↻</span><span class="status @(Model.RunningJobs.Count > 0 ? "warning" : "")">Live</span></div>
+            <span class="stat-label">Laufende Ausführungen</span>
+            <div class="stat-value">@Model.RunningJobs.Count</div>
+            <span class="stat-note">@(Model.RunningJobs.Count == 0 ? "Aktuell keine Übertragung" : $"{Model.RunningJobs.Count} Übertragung(en) aktiv")</span>
+        </div>
+        <div class="stat dashboard-stat">
+            <div class="stat-top"><span class="stat-icon">✓</span><span class="status">24 h</span></div>
+            <span class="stat-label">Erfolgreiche Backups</span>
+            <div class="stat-value">@Model.CompletedBackups24Hours</div>
+            <span class="stat-note">@FormatSize(Model.TransferredBytes24Hours) verarbeitet</span>
+        </div>
+        <div class="stat dashboard-stat">
+            <div class="stat-top"><span class="stat-icon danger">!</span><span class="status @(Model.FailedJobs24Hours > 0 ? "offline" : "")">24 h</span></div>
+            <span class="stat-label">Fehlgeschlagene Ausführungen</span>
+            <div class="stat-value">@Model.FailedJobs24Hours</div>
+            <span class="stat-note @(Model.FailedJobs24Hours > 0 ? "warn" : "")">@(Model.FailedJobs24Hours > 0 ? "Protokolle prüfen" : "Keine neuen Fehler")</span>
+        </div>
+        <div class="stat dashboard-stat">
+            <div class="stat-top"><span class="stat-icon">◈</span><span class="status @(Model.AttentionObjects > 0 ? "warning" : "")">Objects</span></div>
+            <span class="stat-label">Erreichbare Objects</span>
+            <div class="stat-value">@Model.HealthyObjects <small>/ @Model.Objects.Count</small></div>
+            <span class="stat-note @(Model.AttentionObjects > 0 ? "warn" : "")">@(Model.AttentionObjects > 0 ? $"{Model.AttentionObjects} mit Aufmerksamkeit" : "Alle erreichbar")</span>
+        </div>
+    </section>
+
+    <section class="panel dashboard-panel running-tasks">
+        <div class="panel-heading">
+            <div><span class="route-label">Real-Time</span><h2>Aktive Ausführungen</h2></div>
+            <a class="link" asp-page="/Jobs">Historie →</a>
+        </div>
+        @if (Model.RunningJobs.Count == 0)
+        {
+            <div class="dashboard-empty"><span>✓</span><div><strong>Keine laufenden Übertragungen</strong><small>Der Scheduler wartet auf den nächsten geplanten Job.</small></div></div>
+        }
+        else
+        {
+            <div class="table-wrap dashboard-table-wrap">
+                <table class="data-table compact-table running-table">
+                    <colgroup><col style="width:36%" /><col style="width:35%" /><col style="width:21%" /><col style="width:8%" /></colgroup>
+                    <thead><tr><th>Job &amp; Weg</th><th>Status &amp; Fortschritt</th><th>Live</th><th class="action-cell">Aktionen</th></tr></thead>
+                    <tbody>
+                    @foreach (var job in Model.RunningJobs)
+                    {
+                        var progress = job.TotalBytes == 0 ? 0 : (int)Math.Clamp(job.BytesTransferred * 100 / job.TotalBytes, 0, 100);
+                        <tr data-job-id="@job.Id">
+                            <td><div class="cell-stack"><strong class="cell-primary">@job.TaskName</strong><small class="cell-meta">@job.SourceInstanceName → @job.TargetInstanceName</small></div></td>
+                            <td data-job-state><div class="cell-stack"><div class="cell-status"><span class="status warning">@job.State</span><strong data-job-progress data-job-progress-mode="compact">@progress%</strong></div><div class="compact-progress"><div class="job-progress"><div data-job-bar style="width:@progress%"></div></div><small class="cell-meta">@FormatSize(job.BytesTransferred) / @FormatSize(job.TotalBytes)</small></div></div></td>
+                            <td><div class="cell-stack"><strong class="cell-primary" data-job-speed>@FormatSpeed(job.SpeedBytesPerSecond)</strong><small class="cell-meta"><span data-job-remaining>@FormatRemaining(job.BytesTransferred, job.TotalBytes, job.SpeedBytesPerSecond)</span> · <span data-job-updated>@job.UpdateDate.ToLocalTime().ToString("HH:mm:ss")</span></small>@if (job.Method == BackupMethod.Full) { <small class="cell-meta" data-job-estimate>≈ @FormatSize(job.EstimatedStoredBytes) gespeichert</small> }</div></td>
+                            <td class="action-cell"><div class="row-actions"><a class="icon-action primary" asp-page="/Jobs/Details" asp-route-id="@job.Id" title="Protokoll und Details" aria-label="Ausführung @job.Id öffnen"><svg class="ui-icon"><use href="#icon-log"></use></svg></a></div></td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <div class="dashboard-grid dashboard-grid-primary">
+        <section class="panel dashboard-panel activity-panel">
+            <div class="panel-heading">
+                <div><span class="route-label">Letzte 7 Tage</span><h2>Ausführungsaktivität</h2></div>
+                <div class="activity-legend"><span class="success"></span>Backup <span class="restore"></span>Restore <span class="failed"></span>Fehler</div>
+            </div>
+            <div class="activity-chart" aria-label="Ausführungsaktivität der letzten sieben Tage">
+                @foreach (var day in Model.ActivityDays)
+                {
+                    var completedHeight = day.CompletedBackups * 100d / Model.MaxActivityValue;
+                    var restoreHeight = day.CompletedRestores * 100d / Model.MaxActivityValue;
+                    var failedHeight = day.FailedJobs * 100d / Model.MaxActivityValue;
+                    <div class="activity-column" title="@day.CompletedBackups Backups, @day.CompletedRestores Restores, @day.FailedJobs Fehler · @FormatSize(day.TransferredBytes)">
+                        <strong>@day.Total</strong>
+                        <div class="activity-bars">
+                            @if (day.CompletedBackups > 0) { <i class="success" style="height:@completedHeight.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></i> }
+                            @if (day.CompletedRestores > 0) { <i class="restore" style="height:@restoreHeight.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></i> }
+                            @if (day.FailedJobs > 0) { <i class="failed" style="height:@failedHeight.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></i> }
+                            @if (day.Total == 0) { <i class="empty-bar"></i> }
+                        </div>
+                        <small>@day.Label</small>
+                    </div>
+                }
+            </div>
+        </section>
+
+        <section class="panel dashboard-panel health-panel">
+            <div class="panel-heading"><div><span class="route-label">Infrastruktur</span><h2>Systemstatus</h2></div><a class="link" asp-page="/Instances/Index">Instanzen →</a></div>
+            <div class="health-overview">
+                <div><strong>@Model.OnlineInstances / @Model.Instances.Count</strong><span>Instanzen online</span></div>
+                <div><strong>@Model.HealthyObjects / @Model.Objects.Count</strong><span>Objects erreichbar</span></div>
+            </div>
+            <div class="health-list">
+                @foreach (var instance in Model.Instances)
+                {
+                    var online = instance.Role == InstanceRole.Primary ||
+                        (instance.Enabled && instance.Status == InstanceStatus.Online && instance.LastSeenDate >= DateTimeOffset.UtcNow.AddSeconds(-30));
+                    <div class="health-row"><i class="@(online ? "online" : "offline")"></i><div><strong>@instance.Name</strong><small>@instance.Role · @(instance.LastSeenDate?.ToLocalTime().ToString("dd.MM. HH:mm:ss") ?? "lokal")</small></div><span class="status @(!online ? "offline" : "")">@(online ? "Online" : instance.Status)</span></div>
+                }
+                @foreach (var item in Model.Objects.Where(item => item.Status != ObjectStatus.Healthy).Take(3))
+                {
+                    <div class="health-row"><i class="warning"></i><div><strong>@item.Name</strong><small>@(string.IsNullOrWhiteSpace(item.LastTestMessage) ? item.Detail : item.LastTestMessage)</small></div><span class="status warning">@item.Status</span></div>
+                }
+            </div>
+        </section>
+    </div>
+
+    <div class="dashboard-grid dashboard-grid-secondary">
+        <section class="panel dashboard-panel recent-jobs-panel">
+            <div class="panel-heading"><div><span class="route-label">Historie</span><h2>Letzte Ausführungen</h2></div><a class="link" asp-page="/Jobs">Historie →</a></div>
+            <div class="dashboard-list">
+                @foreach (var job in Model.RecentJobs)
+                {
+                    var isRestore = job.SourceObjectKind == "BackupVersion";
+                    <div class="dashboard-list-row">
+                        <span class="list-icon">@(isRestore ? "↥" : "↻")</span>
+                        <span class="row-main"><strong>@job.TaskName</strong><small>#@job.Id · @job.SourceInstanceName → @job.TargetInstanceName · @job.UpdateDate.ToLocalTime().ToString("dd.MM. HH:mm")</small></span>
+                        <span class="status @StatusClass(job.State)">@job.State</span>
+                        <a class="icon-action" asp-page="/Jobs/Details" asp-route-id="@job.Id" title="Protokoll und Details" aria-label="Ausführung @job.Id öffnen"><svg class="ui-icon"><use href="#icon-log"></use></svg></a>
+                    </div>
+                }
+                @if (Model.RecentJobs.Count == 0) { <div class="empty">Noch keine Ausführungen vorhanden.</div> }
+            </div>
+        </section>
+
+        <section class="panel dashboard-panel task-access-panel">
+            <div class="panel-heading"><div><span class="route-label">Backup &amp; Restore</span><h2>Jobs und Dateien</h2></div><a class="link" asp-page="/Tasks/Index">Alle Jobs →</a></div>
+            <div class="dashboard-list">
+                @foreach (var task in Model.Tasks.Take(6))
+                {
+                    var storage = Model.GetStorage(task.Id);
+                    <div class="dashboard-list-row">
+                        <span class="list-icon"><svg class="ui-icon"><use href="#icon-folder"></use></svg></span>
+                        <span class="row-main"><strong>@task.Name</strong><small>@(storage.HasBackup ? $"{FormatSize(storage.CurrentBytes)} aktuell · {FormatSize(storage.TotalWithVersionsBytes)} inkl. Versionen" : "Noch keine Backupgröße")</small></span>
+                        <a class="icon-action" asp-page="/Restore/Explorer" asp-route-taskId="@task.Id" title="Datei-Explorer" aria-label="Datei-Explorer für @task.Name öffnen"><svg class="ui-icon"><use href="#icon-folder"></use></svg></a>
+                    </div>
+                }
+            </div>
+        </section>
+    </div>
+</div>
+
+@section Scripts { <script src="~/jobs-live.js" asp-append-version="true"></script> }
+
+@functions {
+    string StatusClass(string state) => state is "Fehler" or "Failed" ? "offline" : state is "Running" or "Geplant" ? "warning" : "";
+    string FormatSpeed(long value) => value <= 0 ? "—" : value >= 1024 * 1024 ? $"{value / 1024d / 1024d:0.0} MB/s" : $"{value / 1024d:0.0} KB/s";
+    string FormatSize(long bytes) => bytes switch { >= 1024L * 1024 * 1024 * 1024 => $"{bytes / 1024d / 1024d / 1024d / 1024d:0.##} TiB", >= 1024L * 1024 * 1024 => $"{bytes / 1024d / 1024d / 1024d:0.##} GiB", >= 1024L * 1024 => $"{bytes / 1024d / 1024d:0.##} MiB", >= 1024 => $"{bytes / 1024d:0.#} KiB", _ => $"{bytes} Bytes" };
+    string FormatRemaining(long bytes, long total, long speed) { if (total <= 0 || bytes >= total || speed <= 0) return total > 0 && bytes >= total ? "Fertig" : "—"; var seconds = (long)Math.Ceiling((double)(total - bytes) / speed); var days = seconds / 86400; seconds %= 86400; var hours = seconds / 3600; seconds %= 3600; var minutes = seconds / 60; seconds %= 60; return days > 0 ? $"{days}T {hours}Std" : hours > 0 ? $"{hours}Std {minutes}Min" : minutes > 0 ? $"{minutes}Min {seconds}Sek" : $"{seconds}Sek"; }
+}

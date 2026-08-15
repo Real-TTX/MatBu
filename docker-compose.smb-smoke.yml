@@ -1,0 +1,27 @@
+name: matbu-smb-smoke
+
+services:
+  samba:
+    image: ghcr.io/servercontainers/samba:smbd-only-latest
+    hostname: matbu-smb-smoke
+    environment:
+      ACCOUNT_matbu: MatBu-Smoke-Only-2026!
+      UID_matbu: 1000
+      AVAHI_DISABLE: 1
+      WSDD2_DISABLE: 1
+      NETBIOS_DISABLE: 1
+      SAMBA_VOLUME_CONFIG_matbu: "[MatBuTest]; path=/shares/matbu; valid users = matbu; guest ok = no; read only = no; browseable = yes; force user = root"
+    volumes:
+      - matbu-smb-smoke-data:/shares/matbu
+    networks:
+      matbu:
+        aliases:
+          - matbu-smb-smoke
+
+networks:
+  matbu:
+    external: true
+    name: matbu_default
+
+volumes:
+  matbu-smb-smoke-data:

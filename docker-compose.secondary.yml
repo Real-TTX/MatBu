@@ -1,0 +1,17 @@
+name: matbu-secondary
+
+services:
+  matbu-secondary:
+    build: .
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      MATBU_DATA_PATH: /data
+      MATBU_INSTANCE_ROLE: Secondary
+      MATBU_INSTANCE_TOKEN: ${MATBU_INSTANCE_TOKEN:?set MATBU_INSTANCE_TOKEN for the secondary}
+      MATBU_PRIMARY_ENDPOINT: http://host.docker.internal:9293
+    volumes:
+      - matbu-secondary-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  matbu-secondary-data:

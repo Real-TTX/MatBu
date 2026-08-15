@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MatBu">
+  <rect width="64" height="64" rx="14" fill="#0b7f8a"/>
+  <path d="M12 48V15L32 32L52 15V48" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M12 42h15v-6l11 10-11 10v-6H12z" fill="#fff"/>
+  <path d="M52 50H37v6L26 46l11-10v6h15z" fill="#fff"/>
+</svg>

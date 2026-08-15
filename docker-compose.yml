@@ -1,0 +1,24 @@
+services:
+  matbu:
+    build: .
+    ports:
+      - "9293:9293"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      MATBU_DATA_PATH: /data
+    volumes:
+      - matbu-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  matbu-worker:
+    build: .
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      MATBU_DATA_PATH: /data
+      MATBU_DOCKER_WORKER: "true"
+    volumes:
+      - matbu-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  matbu-data:

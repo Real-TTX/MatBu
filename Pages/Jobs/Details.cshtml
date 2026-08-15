@@ -1,0 +1,111 @@
+@page
+@model MatBu.Pages.Jobs.DetailsModel
+@{
+    ViewData["Title"] = $"{Model.TaskName} · Ausführung #{Model.Job.Id}";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+    var progress = Model.Job.TotalBytes == 0 ? 0 : (int)Math.Clamp(Model.Job.BytesTransferred * 100 / Model.Job.TotalBytes, 0, 100);
+    var selectedSourcePaths = MatBu.Services.SourceSelection.Parse(Model.Job.SourceSelectionJson);
+}
+
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">Ausführungsprotokoll</p>
+        <h1>@Model.TaskName</h1>
+        <p>Ausführung #@Model.Job.Id · Versuch @Math.Max(1, Model.Job.Attempt) · Transfer-ID @Model.Job.TransferId</p>
+    </div>
+    <div class="button-row">
+        <a class="button" asp-page="/Jobs">← Zur Historie</a>
+    </div>
+</div>
+
+<div class="job-route panel">
+    <section>
+        <span class="route-label">Quelle</span>
+        <strong>@Model.SourceObjectName</strong>
+        <small>@Model.SourceKind · @Model.SourceInstanceName</small>
+        <code>@Model.SourceLocation</code>
+    </section>
+    <div class="route-arrow"><span>@Model.SourceInstanceName</span><b>→</b><span>@Model.TargetInstanceName</span></div>
+    <section>
+        <span class="route-label">Konfiguriertes Ziel</span>
+        <strong>@Model.TargetObjectName</strong>
+        <small>@Model.TargetKind · @Model.TargetInstanceName</small>
+        <code>@Model.TargetLocation</code>
+    </section>
+</div>
+
+<div class="actual-destination panel">
+    <span class="route-label">Tatsächlich geschrieben nach</span>
+    <code>@Model.ActualDestination</code>
+</div>
+
+<div class="actual-destination panel">
+    <span class="route-label">Gesicherter Quellumfang</span>
+    @if (selectedSourcePaths.Count == 0) { <strong>Gesamtes Object</strong> }
+    else { <div class="job-tags">@foreach (var path in selectedSourcePaths) { <span class="job-tag">@path</span> }</div> }
+</div>
+
+@if (Model.Job.RetentionExpired)
+{
+    <div class="test-result"><strong>Version durch Retention entfernt</strong><span>Das Ausführungsprotokoll bleibt erhalten, die Sicherungsdaten dieser Version sind nicht mehr wiederherstellbar.</span></div>
+}
+
+<div class="stats job-stats">
+    <div class="stat"><span class="stat-label">Status</span><div class="stat-value compact-value">@Model.Job.State</div></div>
+    <div class="stat"><span class="stat-label">Fortschritt</span><div class="stat-value compact-value">@progress%</div><span class="stat-note">@Model.Job.BytesTransferred / @Model.Job.TotalBytes Bytes</span></div>
+    <div class="stat"><span class="stat-label">Geschwindigkeit</span><div class="stat-value compact-value">@FormatSpeed(Model.Job.SpeedBytesPerSecond)</div></div>
+    <div class="stat"><span class="stat-label">Aktualisiert</span><div class="stat-value compact-value">@Model.Job.UpdateDate.ToLocalTime().ToString("dd.MM. HH:mm:ss")</div></div>
+</div>
+
+<div class="stats job-stats">
+    <div class="stat"><span class="stat-label">Methode</span><div class="stat-value compact-value">@Model.MethodName</div></div>
+    <div class="stat"><span class="stat-label">Snapshot-ID</span><div class="stat-value compact-value">@Model.SnapshotLabel</div></div>
+    <div class="stat"><span class="stat-label">Quelldaten</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.SourceBytes)</div></div>
+    <div class="stat"><span class="stat-label">Gespeichert</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.StoredBytes)</div></div>
+    <div class="stat"><span class="stat-label">Kompression</span><div class="stat-value compact-value">@CompressionName(Model.Job.Compression)</div><span class="stat-note">@(Model.Job.SourceBytes > 0 ? $"{Model.Job.StoredBytes * 100d / Model.Job.SourceBytes:0.0}% der Quelldaten" : "Keine Messdaten")</span></div>
+    <div class="stat"><span class="stat-label">Geschätzte Endgröße</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.EstimatedStoredBytes)</div></div>
+    <div class="stat"><span class="stat-label">Wiederverwendet</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.ReusedBytes)</div></div>
+    <div class="stat"><span class="stat-label">Effizienzquote</span><div class="stat-value compact-value">@Model.Efficiency</div><span class="stat-note">Anteil wiederverwendeter Quelldaten</span></div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Model.Job.Error))
+{
+    <div class="test-result error"><strong>Fehler</strong><span>@Model.Job.Error</span></div>
+}
+
+<div class="panel job-log-panel">
+    <div class="panel-heading"><h2>Ablaufprotokoll</h2><span>@Model.Steps.Count Schritte</span></div>
+    @if (Model.Steps.Count == 0)
+    {
+        <div class="empty">Für diese ältere Ausführung existiert noch kein Schrittprotokoll.</div>
+    }
+    else
+    {
+        <ol class="job-timeline">
+        @foreach (var step in Model.Steps)
+        {
+            <li id="step-@step.Id" class="@step.State.ToLowerInvariant()">
+                <div class="timeline-marker"></div>
+                <div class="timeline-content">
+                    <div class="timeline-heading">
+                        <div><span class="status @StepStatusClass(step.State)">@step.Stage</span><strong>@step.State</strong></div>
+                        <time>@step.CreateDate.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</time>
+                    </div>
+                    <p>@step.Message</p>
+                    <div class="timeline-meta">
+                        @if (!string.IsNullOrWhiteSpace(step.InstanceName)) { <span>⇄ @step.InstanceName</span> }
+                        @if (!string.IsNullOrWhiteSpace(step.Location)) { <code>@step.Location</code> }
+                        @if (step.TotalBytes > 0) { <span>@step.BytesTransferred / @step.TotalBytes Bytes</span> }
+                    </div>
+                </div>
+            </li>
+        }
+        </ol>
+    }
+</div>
+
+@functions {
+    string FormatSpeed(long value) => value <= 0 ? "—" : value >= 1024 * 1024 ? $"{value / 1024d / 1024d:0.0} MB/s" : $"{value / 1024d:0.0} KB/s";
+    string CompressionName(MatBu.Models.BackupCompression value) => value switch { MatBu.Models.BackupCompression.Fast => "Brotli schnell", MatBu.Models.BackupCompression.Balanced => "Brotli ausgewogen", MatBu.Models.BackupCompression.Maximum => "Brotli maximal", _ => "Unkomprimiert" };
+    string StepStatusClass(string state) => state is "Failed" or "Cancelled" ? "offline" : state is "Started" or "Queued" or "Resumed" ? "warning" : "";
+}

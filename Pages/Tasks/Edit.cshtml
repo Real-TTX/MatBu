@@ -1,0 +1,290 @@
+@page
+@model MatBu.Pages.Tasks.EditModel
+@using System.Text.Json
+@{
+    ViewData["Title"] = Model.Id is null ? "Job erstellen" : "Job bearbeiten";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+}
+
+<div class="page-heading">
+    <div><p class="eyebrow">Backup-Job</p><h1>@ViewData["Title"]</h1><p>Definiere Quelle, Ziel, Methode, Zeitplan und Retention.</p></div>
+</div>
+
+<form method="post" class="panel form">
+    <div asp-validation-summary="All" class="validation-summary"></div>
+    @if (Model.Error is not null)
+    {
+        <div class="login-error">@Model.Error</div>
+    }
+    <div class="form-grid">
+        <div class="field">
+            <label asp-for="Input.Name">Name</label>
+            <input asp-for="Input.Name" required />
+        </div>
+        <div class="field tag-field">
+            <div class="field-label-row"><label>Tags</label><a asp-page="/Tasks/Labels/Index">Tags verwalten</a></div>
+            <div class="tag-selector">
+                @foreach (var label in Model.JobLabels)
+                {
+                    <label class="tag-choice" style="--tag-color:@label.Color">
+                        <input type="checkbox" name="SelectedLabelIds" value="@label.Id" checked="@Model.SelectedLabelIds.Contains(label.Id)" />
+                        <span>@label.Name</span>
+                    </label>
+                }
+                @if (Model.JobLabels.Count == 0) { <small>Noch keine Tags vorhanden.</small> }
+            </div>
+            <span asp-validation-for="SelectedLabelIds" class="field-error"></span>
+        </div>
+        <div class="field schedule-kind-field">
+            <label asp-for="ScheduleKind">Zeitplan</label>
+            <select asp-for="ScheduleKind" id="schedule-kind">
+                <option value="Interval">Alle X Minuten/Stunden</option>
+                <option value="Daily">Täglich</option>
+                <option value="Weekly">Wöchentlich</option>
+            </select>
+            <span asp-validation-for="ScheduleKind" class="field-error"></span>
+        </div>
+        <div class="field" id="schedule-interval-field">
+            <label asp-for="ScheduleInterval">Intervall</label>
+            <div class="schedule-inline">
+                <input asp-for="ScheduleInterval" type="number" min="1" max="1440" inputmode="numeric" />
+                <select asp-for="ScheduleIntervalUnit" id="schedule-interval-unit">
+                    <option value="Minutes">Minuten</option>
+                    <option value="Hours">Stunden</option>
+                </select>
+            </div>
+            <small>Minuten: 1–1440 · Stunden: 1–168</small>
+        </div>
+        <div class="field" id="schedule-time-field">
+            <label asp-for="ScheduleTime">Uhrzeit</label>
+            <input asp-for="ScheduleTime" type="time" step="60" />
+        </div>
+        <div class="field" id="schedule-weekday-field">
+            <label asp-for="ScheduleWeekday">Wochentag</label>
+            <select asp-for="ScheduleWeekday">
+                <option value="Monday">Montag</option>
+                <option value="Tuesday">Dienstag</option>
+                <option value="Wednesday">Mittwoch</option>
+                <option value="Thursday">Donnerstag</option>
+                <option value="Friday">Freitag</option>
+                <option value="Saturday">Samstag</option>
+                <option value="Sunday">Sonntag</option>
+            </select>
+        </div>
+        <div class="field">
+            <label asp-for="Input.SourceId">Quelle</label>
+            <select asp-for="Input.SourceId" id="source-object">
+                <option value="">Bitte wählen</option>
+                @foreach (var item in Model.Objects.Where(x => x.Direction != ObjectDirection.Target))
+                {
+                    <option value="@item.Id">@item.Name</option>
+                }
+            </select>
+        </div>
+        <div class="field source-selection-field">
+            <label>Zu sichernde Ordner</label>
+            <button class="source-picker-input" id="source-picker-open" type="button">
+                <span><strong id="source-picker-title">Gesamtes Object</strong><small id="source-picker-summary">Alle Ordner und Dateien werden gesichert</small></span>
+                <svg class="ui-icon"><use href="#icon-folder"></use></svg>
+            </button>
+            <div id="selected-source-inputs">
+                @foreach (var path in Model.SelectedSourcePaths) { <input type="hidden" name="SelectedSourcePaths" value="@path" /> }
+            </div>
+            <small>Optional: Mehrere Ordner auswählen. Eine leere Auswahl sichert das vollständige Object.</small>
+        </div>
+        <div class="field">
+            <label asp-for="Input.TargetId">Ziel</label>
+            <select asp-for="Input.TargetId">
+                <option value="">Bitte wählen</option>
+                @foreach (var item in Model.Objects.Where(x => x.Direction != ObjectDirection.Source))
+                {
+                    <option value="@item.Id">@item.Name</option>
+                }
+            </select>
+        </div>
+        <div class="field">
+            <label asp-for="Input.Method">Backup-Methode</label>
+            <select asp-for="Input.Method" id="backup-method">
+                <option value="ReverseIncremental">Reverse Incremental (empfohlen)</option>
+                <option value="Full">Full</option>
+            </select>
+            <small>Reverse Incremental hält den aktuellen Stand direkt als normale Dateien vor und speichert nur geänderte Blöcke.</small>
+            <span asp-validation-for="Input.Method" class="field-error"></span>
+        </div>
+        <div class="field" id="chunk-size-field">
+            <label asp-for="Input.ChunkSizeMiB">Chunkgröße</label>
+            <select asp-for="Input.ChunkSizeMiB" id="chunk-size">
+                @foreach (var chunkSize in Model.AllowedChunkSizesMiB)
+                {
+                    <option value="@chunkSize">@chunkSize MiB</option>
+                }
+            </select>
+            <small>Größere Chunks reduzieren Verwaltungsaufwand, kleinere Chunks erhöhen die Wiederverwendung.</small>
+            <span asp-validation-for="Input.ChunkSizeMiB" class="field-error"></span>
+        </div>
+        <div class="field" id="compression-field">
+            <label asp-for="Input.Compression">Kompression</label>
+            <select asp-for="Input.Compression" id="compression">
+                <option value="None">Aus – für bereits komprimierte VM-Backups</option>
+                <option value="Fast">Schnell – hoher Durchsatz (empfohlen)</option>
+                <option value="Balanced">Ausgewogen</option>
+                <option value="Maximum">Maximum – höchste CPU-Last</option>
+            </select>
+            <small>Full-Archive werden während der Erstellung gestreamt komprimiert. Für VMDK/ZIP ist „Aus“ oft schneller.</small>
+            <span asp-validation-for="Input.Compression" class="field-error"></span>
+        </div>
+        <div class="field">
+            <label asp-for="Input.Retention">Retention</label>
+            <select asp-for="Input.Retention">
+                <option>30 Tage</option>
+                <option>12 Monate</option>
+                <option>8 Wochen</option>
+            </select>
+            <small>Versionen werden nach dieser Zeit automatisch aus dem Backup-Ziel entfernt.</small>
+        </div>
+        <div class="field">
+            <label asp-for="Input.MaxRetryAttempts">Maximale Versuche</label>
+            <input asp-for="Input.MaxRetryAttempts" type="number" min="1" max="20" inputmode="numeric" />
+            <small>Inklusive Erstversuch. Mit 1 sind automatische Wiederholungen deaktiviert.</small>
+            <span asp-validation-for="Input.MaxRetryAttempts" class="field-error"></span>
+        </div>
+        <div class="field">
+            <label asp-for="Input.RetryDelayMinutes">Retry-Basiswartezeit</label>
+            <div class="input-suffix"><input asp-for="Input.RetryDelayMinutes" type="number" min="1" max="1440" inputmode="numeric" /><span>Minuten</span></div>
+            <small>Die Wartezeit verdoppelt sich nach jedem fehlgeschlagenen Versuch.</small>
+            <span asp-validation-for="Input.RetryDelayMinutes" class="field-error"></span>
+        </div>
+        <div class="field">
+            <label><input asp-for="Input.Enabled" /> Aktiviert</label>
+        </div>
+    </div>
+    <div class="form-actions">
+        <button class="button primary" type="submit">Speichern</button>
+        <a class="button" asp-page="/Tasks/Index">Zurück</a>
+    </div>
+</form>
+
+<dialog class="source-picker-dialog" id="source-picker-dialog">
+    <div class="source-picker-shell">
+        <div class="source-picker-header"><div><span class="route-label">Quell-Object</span><h2>Backup-Ordner auswählen</h2></div><button class="icon-action" id="source-picker-close" type="button" aria-label="Dialog schließen">×</button></div>
+        <div class="source-picker-toolbar"><button class="button" id="source-picker-all" type="button">Gesamtes Object</button><span id="source-picker-count">Keine Einschränkung</span></div>
+        <div class="source-tree" id="source-tree"><div class="empty">Ordner werden beim Öffnen geladen.</div></div>
+        <div class="source-picker-error" id="source-picker-error" hidden></div>
+        <div class="form-actions"><button class="button primary" id="source-picker-apply" type="button">Auswahl übernehmen</button><button class="button" id="source-picker-cancel" type="button">Abbrechen</button></div>
+    </div>
+</dialog>
+
+<script>
+    (() => {
+        const method = document.getElementById('backup-method');
+        const chunkField = document.getElementById('chunk-size-field');
+        const chunkSize = document.getElementById('chunk-size');
+        const compressionField = document.getElementById('compression-field');
+        const compression = document.getElementById('compression');
+        if (!method || !chunkField || !chunkSize || !compressionField || !compression) return;
+
+        const updateChunkSelection = () => {
+            const isReverseIncremental = method.value === 'ReverseIncremental';
+            chunkField.hidden = !isReverseIncremental;
+            chunkSize.disabled = !isReverseIncremental;
+            compressionField.hidden = isReverseIncremental;
+            compression.disabled = isReverseIncremental;
+        };
+
+        method.addEventListener('change', updateChunkSelection);
+        updateChunkSelection();
+    })();
+
+    (() => {
+        const kind = document.getElementById('schedule-kind');
+        const intervalField = document.getElementById('schedule-interval-field');
+        const timeField = document.getElementById('schedule-time-field');
+        const weekdayField = document.getElementById('schedule-weekday-field');
+        const intervalUnit = document.getElementById('schedule-interval-unit');
+        const intervalInput = document.getElementById('ScheduleInterval');
+        if (!kind || !intervalField || !timeField || !weekdayField) return;
+
+        const updateScheduleFields = () => {
+            const interval = kind.value === 'Interval';
+            intervalField.hidden = !interval;
+            timeField.hidden = interval;
+            weekdayField.hidden = kind.value !== 'Weekly';
+            if (intervalInput && intervalUnit)
+                intervalInput.max = intervalUnit.value === 'Minutes' ? '1440' : '168';
+        };
+
+        kind.addEventListener('change', updateScheduleFields);
+        intervalUnit?.addEventListener('change', updateScheduleFields);
+        updateScheduleFields();
+    })();
+</script>
+
+<script>
+    (() => {
+        const source = document.getElementById('source-object');
+        const dialog = document.getElementById('source-picker-dialog');
+        const tree = document.getElementById('source-tree');
+        const inputs = document.getElementById('selected-source-inputs');
+        const title = document.getElementById('source-picker-title');
+        const summary = document.getElementById('source-picker-summary');
+        const count = document.getElementById('source-picker-count');
+        const error = document.getElementById('source-picker-error');
+        const supported = new Set(['LocalFolder', 'Smb']);
+        let selected = new Set(@Html.Raw(JsonSerializer.Serialize(Model.SelectedSourcePaths)));
+        let draft = new Set(selected);
+
+        const selectedOption = () => source?.selectedOptions?.[0];
+        const updateSummary = () => {
+            const values = [...selected].sort((a, b) => a.localeCompare(b, 'de'));
+            title.textContent = values.length ? `${values.length} Ordner ausgewählt` : 'Gesamtes Object';
+            summary.textContent = values.length ? values.join(' · ') : 'Alle Ordner und Dateien werden gesichert';
+            inputs.replaceChildren(...values.map(path => {
+                const input = document.createElement('input'); input.type = 'hidden'; input.name = 'SelectedSourcePaths'; input.value = path; return input;
+            }));
+        };
+        const updateDraftCount = () => count.textContent = draft.size ? `${draft.size} Ordner ausgewählt` : 'Keine Einschränkung';
+        const isCovered = path => [...draft].some(value => path === value || path.startsWith(value + '/'));
+        const toggleDraft = (path, checked) => {
+            if (checked) {
+                for (const value of [...draft]) if (value.startsWith(path + '/')) draft.delete(value);
+                draft.add(path);
+            } else draft.delete(path);
+            tree.querySelectorAll('input[data-path]').forEach(box => { box.checked = isCovered(box.dataset.path); });
+            updateDraftCount();
+        };
+        const loadChildren = async (container, path = '') => {
+            container.innerHTML = '<div class="source-tree-loading">Ordner werden geladen …</div>';
+            error.hidden = true;
+            try {
+                const response = await fetch(`?handler=BrowseSource&objectId=${encodeURIComponent(source.value)}&path=${encodeURIComponent(path)}`);
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload.message || 'Ordner konnten nicht geladen werden.');
+                container.replaceChildren();
+                if (!payload.entries.length) { container.innerHTML = '<div class="source-tree-empty">Keine Unterordner</div>'; return; }
+                for (const entry of payload.entries) {
+                    const row = document.createElement('div'); row.className = 'source-tree-node';
+                    const line = document.createElement('div'); line.className = 'source-tree-line';
+                    const expand = document.createElement('button'); expand.type = 'button'; expand.className = 'source-tree-expand'; expand.textContent = '›'; expand.title = 'Unterordner laden';
+                    const label = document.createElement('label');
+                    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.path = entry.path; checkbox.checked = isCovered(entry.path);
+                    const name = document.createElement('span'); name.textContent = entry.name;
+                    label.append(checkbox, name); line.append(expand, label); row.append(line);
+                    const children = document.createElement('div'); children.className = 'source-tree-children'; children.hidden = true; row.append(children);
+                    checkbox.addEventListener('change', () => toggleDraft(entry.path, checkbox.checked));
+                    expand.addEventListener('click', async () => { const opening = children.hidden; children.hidden = !opening; expand.classList.toggle('open', opening); if (opening && !children.dataset.loaded) { children.dataset.loaded = 'true'; await loadChildren(children, entry.path); } });
+                    container.append(row);
+                }
+            } catch (reason) { container.replaceChildren(); error.textContent = reason.message; error.hidden = false; }
+        };
+
+        document.getElementById('source-picker-open').addEventListener('click', async () => {
+            if (!source.value) { error.textContent = 'Bitte zuerst ein Quell-Object auswählen.'; error.hidden = false; dialog.showModal(); return; }
+            draft = new Set(selected); updateDraftCount(); dialog.showModal(); await loadChildren(tree);
+        });
+        document.getElementById('source-picker-all').addEventListener('click', () => { draft.clear(); tree.querySelectorAll('input[data-path]').forEach(box => box.checked = false); updateDraftCount(); });
+        document.getElementById('source-picker-apply').addEventListener('click', () => { selected = new Set(draft); updateSummary(); dialog.close(); });
+        for (const id of ['source-picker-close', 'source-picker-cancel']) document.getElementById(id).addEventListener('click', () => dialog.close());
+        source.addEventListener('change', () => { selected.clear(); updateSummary(); });
+        updateSummary();
+    })();
+</script>

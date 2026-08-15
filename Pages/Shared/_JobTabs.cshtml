@@ -1,0 +1,9 @@
+@{
+    var page = ViewContext.RouteData.Values["page"]?.ToString() ?? "";
+    var jobsActive = page.StartsWith("/Tasks", StringComparison.OrdinalIgnoreCase);
+    var historyActive = page.StartsWith("/Jobs", StringComparison.OrdinalIgnoreCase);
+}
+<nav class="tab-bar" aria-label="Jobs und Historie">
+    <a class="@(jobsActive ? "active" : "")" asp-page="/Tasks/Index">Jobs</a>
+    <a class="@(historyActive ? "active" : "")" asp-page="/Jobs">Historie</a>
+</nav>

@@ -1,0 +1,5 @@
+@page
+@model MatBu.Pages.Users.EditModel
+@{ ViewData["Title"] = Model.Id is null ? "Benutzer erstellen" : "Benutzer bearbeiten"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
+<div class="page-heading"><div><p class="eyebrow">Administration</p><h1>@ViewData["Title"]</h1><p>Rolle und lokale Anmeldung verwalten.</p></div></div>
+<form method="post" class="panel form">@if (Model.Error is not null) { <div class="login-error">@Model.Error</div> }<div class="form-grid"><div class="field"><label asp-for="UserName">Benutzername</label><input asp-for="UserName" autocomplete="username" required /></div><div class="field"><label asp-for="Role">Rolle</label><select asp-for="Role"><option value="Admin">Admin</option><option value="User">User</option><option value="Operator">Operator</option></select></div><div class="field"><label asp-for="Password">Passwort</label><input asp-for="Password" type="password" autocomplete="new-password" placeholder="@(Model.Id is null ? "erforderlich" : "leer = unverändert")" /></div></div><div class="form-actions"><button class="button primary" type="submit">Speichern</button><a class="button" asp-page="/Users">Zurück</a></div></form>

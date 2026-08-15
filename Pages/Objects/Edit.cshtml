@@ -1,0 +1,105 @@
+@page
+@model MatBu.Pages.Objects.EditModel
+@using MatBu.Models
+@{
+    ViewData["Title"] = Model.Id is null ? "Object erstellen" : "Object bearbeiten";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+}
+
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">Object</p>
+        <h1>@ViewData["Title"]</h1>
+        <p>Konfiguriere Quelle, Ziel, Docker-Volume oder MatBu-Instanz.</p>
+    </div>
+</div>
+
+<form method="post" class="panel form">
+    <input type="hidden" asp-for="Id" />
+    <div asp-validation-summary="All" class="validation-summary"></div>
+
+    <div class="form-grid">
+        <div class="field">
+            <label asp-for="Input.Name">Name</label>
+            <input asp-for="Input.Name" required />
+        </div>
+        <div class="field">
+            <label asp-for="Input.Kind">Typ</label>
+            <select asp-for="Input.Kind">
+                <option value="Smb">SMB</option>
+                <option value="LocalFolder">Lokaler Ordner</option>
+                <option value="MatBuSlave">MatBu Slave</option>
+                <option value="DockerVolume">Docker Volume</option>
+            </select>
+        </div>
+        <div class="field">
+            <label asp-for="Input.Direction">Richtung</label>
+            <select asp-for="Input.Direction">
+                <option value="Source">Quelle</option>
+                <option value="Target">Ziel</option>
+                <option value="Both">Beides</option>
+            </select>
+            <small>Bei Zielen prüft MatBu zusätzlich Schreib- und Löschrechte.</small>
+        </div>
+        <div class="field">
+            <label asp-for="Input.InstanceId">Ausführung auf</label>
+            <select asp-for="Input.InstanceId">
+                @foreach (var instance in Model.Instances)
+                {
+                    <option value="@instance.Id">@instance.Name (@instance.Role)</option>
+                }
+            </select>
+            <small>Test und Dateioperationen laufen auf dieser Instanz.</small>
+        </div>
+        <div class="field" style="grid-column:1/-1">
+            <label asp-for="Input.Location">Adresse / Volume-Name</label>
+            <input asp-for="Input.Location" placeholder="\\server\freigabe\unterordner" required />
+            @if (!string.IsNullOrWhiteSpace(Model.SmbPathSummary))
+            {
+                <small class="path-summary">Erkannt: @Model.SmbPathSummary</small>
+            }
+            else
+            {
+                <small>SMB-Syntax: <code>\\server\freigabe\unterordner</code>. Der erste Teil nach dem Server ist immer die Freigabe.</small>
+            }
+        </div>
+        <div class="field" style="grid-column:1/-1">
+            <label asp-for="Input.Detail">Beschreibung</label>
+            <input asp-for="Input.Detail" />
+        </div>
+        <div class="field">
+            <label asp-for="SmbUsername">SMB-Benutzername</label>
+            <input asp-for="SmbUsername" autocomplete="username" placeholder="DOMAIN\benutzer oder benutzer" />
+            <small>Leer lassen bedeutet Gastzugriff.</small>
+        </div>
+        <div class="field">
+            <label asp-for="SmbPassword">SMB-Passwort</label>
+            <input asp-for="SmbPassword" type="password" autocomplete="new-password" placeholder="leer = gespeichertes Passwort behalten" />
+            <small>@(Model.HasStoredSmbCredential ? "Ein verschlüsseltes Passwort ist gespeichert." : "Noch kein Passwort gespeichert.")</small>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(Model.Input.LastTestMessage))
+    {
+        <div class="test-result @(Model.Input.Status == ObjectStatus.Healthy ? "success" : "error")">
+            <strong>Letzter Test · @Model.Input.LastTestDate?.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</strong>
+            <span>@Model.Input.LastTestMessage</span>
+        </div>
+    }
+
+    @if (TempData["Message"] is string message)
+    {
+        <div class="test-result @(Model.Input.Status == ObjectStatus.Healthy ? "success" : "error")">@message</div>
+    }
+
+    <div class="form-actions button-row">
+        <button class="button primary" type="submit">✓ Speichern</button>
+        <button class="button" type="submit" asp-page-handler="Test">↻ Speichern &amp; testen</button>
+        <a class="button" asp-page="/Objects/Index">← Zurück</a>
+        @if (Model.Id is not null)
+        {
+            <button class="button danger" type="submit" formaction="/Objects?handler=Delete&amp;id=@Model.Id">Löschen</button>
+        }
+    </div>
+    <small>„Speichern &amp; testen“ verwendet sofort die aktuell eingegebenen Werte und Zugangsdaten.</small>
+</form>

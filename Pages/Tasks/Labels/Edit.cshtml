@@ -1,0 +1,35 @@
+@page
+@model MatBu.Pages.Tasks.Labels.EditModel
+@{
+    ViewData["Title"] = Model.Id is null ? "Tag erstellen" : "Tag bearbeiten";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+}
+
+<div class="page-heading"><div><p class="eyebrow">Organisation</p><h1>@ViewData["Title"]</h1></div></div>
+<form method="post" class="panel form">
+    <div asp-validation-summary="All" class="validation-summary"></div>
+    <div class="form-grid">
+        <div class="field">
+            <label asp-for="Name">Name</label>
+            <input asp-for="Name" required maxlength="80" placeholder="z. B. Kunde Müller" />
+            <span asp-validation-for="Name" class="field-error"></span>
+        </div>
+        <div class="field">
+            <label asp-for="Color">Farbe</label>
+            <input asp-for="Color" type="color" />
+            <span asp-validation-for="Color" class="field-error"></span>
+        </div>
+    </div>
+    <div class="tag-preview"><span>Vorschau</span><strong class="job-tag" id="tag-preview" style="--tag-color:@Model.Color">@Model.Name</strong></div>
+    <div class="form-actions"><button class="button primary" type="submit">Speichern</button><a class="button" asp-page="/Tasks/Labels/Index">Zurück</a></div>
+</form>
+<script>
+(() => {
+    const name = document.getElementById('Name');
+    const color = document.getElementById('Color');
+    const preview = document.getElementById('tag-preview');
+    if (!name || !color || !preview) return;
+    const update = () => { preview.textContent = name.value || 'Tag'; preview.style.setProperty('--tag-color', color.value); };
+    name.addEventListener('input', update); color.addEventListener('input', update); update();
+})();
+</script>

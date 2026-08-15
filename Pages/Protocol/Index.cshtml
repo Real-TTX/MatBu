@@ -1,0 +1,59 @@
+@page "/Protocol"
+@model MatBu.Pages.Protocol.IndexModel
+@{
+    ViewData["Title"] = "Protokoll";
+    ViewData["UserName"] = Model.CurrentUser?.UserName;
+}
+
+<div class="page-heading">
+    <div><p class="eyebrow">Systemweit</p><h1>Protokoll</h1><p>Technische Schritte, Meldungen, Instanzen und Pfade aller Ausführungen.</p></div>
+    <a class="button" asp-page="/Jobs">Historie öffnen</a>
+</div>
+
+<form method="get" class="toolbar compact-toolbar">
+    <input name="Search" value="@Model.Search" placeholder="Meldungen, Jobs, Instanzen oder Pfade durchsuchen …" />
+    <select name="StageFilter"><option value="Alle" selected="@(Model.StageFilter == "Alle")">Alle Schritte</option>@foreach (var stage in Model.Stages) { <option value="@stage" selected="@(Model.StageFilter == stage)">@stage</option> }</select>
+    <select name="StateFilter"><option value="Alle" selected="@(Model.StateFilter == "Alle")">Alle Status</option>@foreach (var state in Model.States) { <option value="@state" selected="@(Model.StateFilter == state)">@state</option> }</select>
+    <select name="Sort"><option value="newest" selected="@(Model.Sort == "newest")">Neueste zuerst</option><option value="oldest" selected="@(Model.Sort == "oldest")">Älteste zuerst</option></select>
+    <button class="button" type="submit">Filtern</button>
+</form>
+
+<div class="panel compact-list-panel">
+    <table class="data-table compact-table protocol-table">
+        <colgroup><col style="width:14%" /><col style="width:20%" /><col style="width:31%" /><col style="width:20%" /><col style="width:9%" /><col style="width:6%" /></colgroup>
+        <thead><tr><th>Zeitpunkt</th><th>Job &amp; Ausführung</th><th>Schritt &amp; Meldung</th><th>Instanz &amp; Pfad</th><th>Status</th><th class="action-cell">Aktionen</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Items)
+        {
+            <tr>
+                <td><div class="cell-stack"><strong class="cell-primary">@item.Step.CreateDate.ToLocalTime().ToString("dd.MM.yy")</strong><small class="cell-meta">@item.Step.CreateDate.ToLocalTime().ToString("HH:mm:ss") · Schritt @item.Step.Sequence</small></div></td>
+                <td><div class="cell-stack"><strong class="cell-primary">@item.JobName</strong><small class="cell-meta">Ausführung #@item.Step.TransferJobId · @(item.Execution?.State ?? "entfernt")</small></div></td>
+                <td><div class="cell-stack"><strong class="cell-primary">@item.Step.Stage</strong><small class="cell-meta" title="@item.Step.Message">@item.Step.Message</small></div></td>
+                <td><div class="cell-stack"><strong class="cell-primary">@(string.IsNullOrWhiteSpace(item.Step.InstanceName) ? "—" : item.Step.InstanceName)</strong><small class="cell-meta" title="@item.Step.Location">@(string.IsNullOrWhiteSpace(item.Step.Location) ? "Kein Pfad" : item.Step.Location)</small></div></td>
+                <td><div class="cell-status"><span class="status @StatusClass(item.Step.State)">@item.Step.State</span></div></td>
+                <td class="action-cell">
+                    @if (item.Execution is not null)
+                    {
+                        <div class="row-actions"><a class="icon-action" asp-page="/Jobs/Details" asp-route-id="@item.Step.TransferJobId" asp-fragment="step-@item.Step.Id" title="Ausführungsprotokoll öffnen" aria-label="Ausführung @item.Step.TransferJobId öffnen"><svg class="ui-icon"><use href="#icon-log"></use></svg></a></div>
+                    }
+                </td>
+            </tr>
+        }
+        @if (Model.Items.Count == 0) { <tr><td colspan="6"><div class="empty">Keine Protokolleinträge für diesen Filter gefunden.</div></td></tr> }
+        </tbody>
+    </table>
+</div>
+
+@if (Model.TotalPages > 1)
+{
+    <nav class="pagination" aria-label="Seitennavigation">
+        @for (var pageNumber = 1; pageNumber <= Model.TotalPages; pageNumber++)
+        {
+            <a class="@(pageNumber == Model.PageNumber ? "active" : "")" asp-route-PageNumber="@pageNumber" asp-route-Search="@Model.Search" asp-route-StageFilter="@Model.StageFilter" asp-route-StateFilter="@Model.StateFilter" asp-route-Sort="@Model.Sort">@pageNumber</a>
+        }
+    </nav>
+}
+
+@functions {
+    static string StatusClass(string state) => state is "Failed" or "Cancelled" ? "offline" : state is "Started" or "Queued" or "Resumed" ? "warning" : "";
+}
