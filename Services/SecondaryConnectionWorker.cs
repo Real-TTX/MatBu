@@ -163,6 +163,7 @@ public sealed class SecondaryConnectionWorker(
                         payload.ChunkSizeMiB,
                         cancellationToken,
                         payload.Source.IncludedPaths);
+                    preparation.Manifest.Method = payload.Method;
                     var accepted = await UploadIncrementalManifestAsync(client, command.TransferId, preparation.Manifest, cancellationToken);
                     await PushIncrementalChunksAsync(client, command, preparation, accepted, cancellationToken);
                     await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(accepted, JsonOptions), "", cancellationToken);
@@ -179,7 +180,7 @@ public sealed class SecondaryConnectionWorker(
                     {
                         Id = payload.TaskId,
                         Token = payload.TaskToken,
-                        Method = BackupMethod.ReverseIncremental,
+                        Method = manifest.Method,
                         ChunkSizeMiB = Math.Max(1, manifest.ChunkSizeBytes / 1024 / 1024)
                     };
                     var target = new BackupObject
@@ -195,7 +196,7 @@ public sealed class SecondaryConnectionWorker(
                         TaskId = payload.TaskId,
                         TaskToken = payload.TaskToken,
                         TransferId = command.TransferId,
-                        Method = BackupMethod.ReverseIncremental
+                        Method = manifest.Method
                     };
                     (string Username, string Password)? credential = string.IsNullOrWhiteSpace(payload.Target.SmbUsername) || payload.Target.SmbPassword is null
                         ? null

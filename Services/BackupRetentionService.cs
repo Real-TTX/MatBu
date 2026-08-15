@@ -48,7 +48,7 @@ public sealed partial class BackupRetentionService(
         var expiredIds = expiredJobs.Select(job => job.Id).ToHashSet();
         var plans = expiredJobs.Select(job => BuildPlan(data, job)).ToList();
         var retainedSnapshotTokens = routeJobs
-            .Where(job => !expiredIds.Contains(job.Id) && job.Method == BackupMethod.ReverseIncremental)
+            .Where(job => !expiredIds.Contains(job.Id) && BackupMethodPolicy.IsChunked(job.Method))
             .Select(job => FindSnapshotToken(data, job))
             .Where(token => !string.IsNullOrWhiteSpace(token))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -94,7 +94,7 @@ public sealed partial class BackupRetentionService(
         }
 
         var reverseTokens = expiredVersions
-            .Where(version => version.Method == BackupMethod.ReverseIncremental && !string.IsNullOrWhiteSpace(version.SnapshotToken))
+            .Where(version => BackupMethodPolicy.IsChunked(version.Method) && !string.IsNullOrWhiteSpace(version.SnapshotToken))
             .Select(version => version.SnapshotToken)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();

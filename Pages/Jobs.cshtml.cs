@@ -134,9 +134,7 @@ public class JobsModel(PersistentStore store) : AppPageModel(store)
         return Objects.TryGetValue(objectId, out var target) ? target.Location : "—";
     }
 
-    public string GetMethodName(TransferJob job) => job.Method == BackupMethod.ReverseIncremental
-        ? "Reverse Incremental"
-        : "Full";
+    public string GetMethodName(TransferJob job) => BackupMethodPolicy.Label(job.Method);
 
     public string GetSnapshotLabel(TransferJob job)
     {

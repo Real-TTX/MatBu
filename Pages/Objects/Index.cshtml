@@ -50,6 +50,6 @@
 @if (Model.TotalPages > 1) { <div class="pagination">@for (var p = 1; p <= Model.TotalPages; p++) { <a class="@(p == Model.PageNumber ? "active" : "")" asp-page="/Objects/Index" asp-route-Search="@Model.Search" asp-route-KindFilter="@Model.KindFilter" asp-route-Sort="@Model.Sort" asp-route-PageNumber="@p">@p</a> }</div> }
 
 @functions {
-    static string KindLabel(ObjectKind kind) => kind switch { ObjectKind.Smb => "SMB", ObjectKind.LocalFolder => "Lokaler Ordner", ObjectKind.DockerVolume => "Docker Volume", ObjectKind.MatBuSlave => "MatBu Slave", _ => kind.ToString() };
+    static string KindLabel(ObjectKind kind) => kind switch { ObjectKind.Smb => "SMB", ObjectKind.LocalFolder => "Lokaler Ordner", ObjectKind.DockerVolume => "Docker Volume", ObjectKind.MatBuSlave => "MatBu Slave", ObjectKind.Proxmox => "Proxmox VE", _ => kind.ToString() };
     static string DirectionLabel(ObjectDirection direction) => direction switch { ObjectDirection.Source => "Quelle", ObjectDirection.Target => "Ziel", ObjectDirection.Both => "Quelle & Ziel", _ => direction.ToString() };
 }

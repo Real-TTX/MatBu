@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Formats.Tar;
 using MatBu.Data;
 using MatBu.Models;
 
@@ -9,7 +10,7 @@ namespace MatBu.Services;
 public sealed record ArchiveProgress(long SourceBytes, long StoredBytes, long EstimatedSourceBytes, long EstimatedStoredBytes, long SpeedBytesPerSecond);
 public sealed record ArchiveCreationResult(long SourceBytes, long StoredBytes);
 
-public sealed class ArchiveService(IHostEnvironment environment, SmbClientService smbClient, ILogger<ArchiveService> logger)
+public sealed class ArchiveService(IHostEnvironment environment, SmbClientService smbClient, ProxmoxService proxmox, ILogger<ArchiveService> logger)
 {
     private readonly string _dataPath = Environment.GetEnvironmentVariable("MATBU_DATA_PATH") ?? Path.Combine(environment.ContentRootPath, "data");
 
@@ -87,6 +88,12 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
             {
                 await CreateDockerVolumeArchiveAsync(source.Location, sourceCounter, selection, cancellationToken);
             }
+            else if (source.Kind == ObjectKind.Proxmox)
+            {
+                var backupFiles = await proxmox.CreateBackupFilesAsync(source.Location, credential?.Username, credential?.Password, selection, cancellationToken);
+                try { await WriteFilesTarAsync(backupFiles, sourceCounter, cancellationToken); }
+                finally { ProxmoxService.CleanupBackupFiles(backupFiles); }
+            }
             else throw new InvalidOperationException($"Der Object-Typ {source.Kind} kann derzeit nicht als Quelle archiviert werden.");
 
             await sourceCounter.FlushAsync(cancellationToken);
@@ -105,6 +112,22 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         {
             if (sourceCounter is not null) await sourceCounter.DisposeAsync();
             try { if (File.Exists(temporaryBuilding)) File.Delete(temporaryBuilding); } catch { }
+        }
+    }
+
+    private static async Task WriteFilesTarAsync(IReadOnlyList<string> files, Stream output, CancellationToken cancellationToken)
+    {
+        using var writer = new TarWriter(output, TarEntryFormat.Pax, leaveOpen: true);
+        foreach (var path in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var entry = new PaxTarEntry(TarEntryType.RegularFile, Path.GetFileName(path))
+            {
+                DataStream = input,
+                ModificationTime = File.GetLastWriteTimeUtc(path)
+            };
+            await writer.WriteEntryAsync(entry, cancellationToken);
         }
     }
 

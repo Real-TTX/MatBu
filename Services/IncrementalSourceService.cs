@@ -64,7 +64,7 @@ public sealed class IncrementalSourceService(
         {
             await ScanLocalFolderAsync(source.Location, manifest, transferId, SourceSelection.Normalize(includedPaths ?? []), cancellationToken);
         }
-        else if (source.Kind is ObjectKind.Smb or ObjectKind.DockerVolume)
+        else if (source.Kind is ObjectKind.Smb or ObjectKind.DockerVolume or ObjectKind.Proxmox)
         {
             var archive = Path.Combine(workingDirectory, "source.tar");
             await archiveService.CreateCompressedAsync(source, credential, archive, BackupCompression.None, null, cancellationToken, includedPaths);
@@ -108,6 +108,23 @@ public sealed class IncrementalSourceService(
                     oldChunk.Offset != chunk.Offset ||
                     oldChunk.Length != chunk.Length ||
                     !oldChunk.Hash.Equals(chunk.Hash, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+    }
+
+    public static void MarkChunksNeededForTransition(IncrementalBackupManifest manifest, IncrementalBackupManifest? previous)
+    {
+        if (previous is null || previous.ChunkSizeBytes != manifest.ChunkSizeBytes) return;
+        var oldFiles = previous.Files.ToDictionary(file => file.RelativePath, StringComparer.Ordinal);
+        foreach (var file in manifest.Files)
+        {
+            oldFiles.TryGetValue(file.RelativePath, out var oldFile);
+            foreach (var chunk in file.Chunks.Where(chunk => !chunk.Changed))
+            {
+                var oldChunk = oldFile?.Chunks.FirstOrDefault(candidate => candidate.Sequence == chunk.Sequence);
+                if (oldChunk is null || oldChunk.Offset != chunk.Offset || oldChunk.Length != chunk.Length ||
+                    !oldChunk.Hash.Equals(chunk.Hash, StringComparison.OrdinalIgnoreCase))
+                    chunk.Changed = true;
             }
         }
     }

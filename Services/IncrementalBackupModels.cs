@@ -12,6 +12,9 @@ public sealed class IncrementalBackupManifest
     public string TransferId { get; set; } = "";
     public string RepositoryKey { get; set; } = "";
     public BackupMethod Method { get; set; } = BackupMethod.ReverseIncremental;
+    public string ParentSnapshotToken { get; set; } = "";
+    public string BaselineSnapshotToken { get; set; } = "";
+    public int ChainDepth { get; set; }
     public int ChunkSizeBytes { get; set; } = 8 * 1024 * 1024;
     public DateTimeOffset CreateDate { get; set; } = DateTimeOffset.UtcNow;
     public List<IncrementalFileManifest> Files { get; set; } = [];
@@ -59,7 +62,8 @@ public sealed record IncrementalSourceCommandPayload(
     int ChunkSizeMiB,
     GatewaySourceRequest Source,
     long JobId,
-    string RepositoryKey);
+    string RepositoryKey,
+    BackupMethod Method);
 
 public sealed record IncrementalTargetCommandPayload(
     long TaskId,

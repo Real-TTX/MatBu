@@ -6,7 +6,7 @@ public sealed record SourceBrowseRequest(ObjectKind Kind, string Location, strin
 public sealed record SourceBrowseEntry(string Name, string Path, bool HasChildren = true);
 public sealed record SourceBrowseResult(string Path, IReadOnlyList<SourceBrowseEntry> Entries);
 
-public sealed class SourceBrowserService(SmbClientService smbClient, ArchiveService archiveService)
+public sealed class SourceBrowserService(SmbClientService smbClient, ArchiveService archiveService, ProxmoxService proxmox)
 {
     public async Task<SourceBrowseResult> BrowseAsync(
         BackupObject source,
@@ -14,6 +14,9 @@ public sealed class SourceBrowserService(SmbClientService smbClient, ArchiveServ
         (string Username, string Password)? credential,
         CancellationToken cancellationToken)
     {
+        if (source.Kind == ObjectKind.Proxmox)
+            return await proxmox.BrowseGuestsAsync(source.Location, path, credential?.Username, credential?.Password, cancellationToken);
+
         var normalized = SourceSelection.Normalize(string.IsNullOrWhiteSpace(path) ? [] : [path]).FirstOrDefault() ?? "";
         IReadOnlyList<string> names = source.Kind switch
         {

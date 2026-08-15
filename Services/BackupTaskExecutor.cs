@@ -70,7 +70,7 @@ public sealed class BackupTaskExecutor(
 
         try
         {
-            if (task.Method == BackupMethod.ReverseIncremental)
+            if (BackupMethodPolicy.IsChunked(task.Method))
             {
                 await ExecuteReverseIncrementalAsync(task, source, target, sourceInstance, targetInstance, job, route, cancellationToken);
                 return;
@@ -142,10 +142,10 @@ public sealed class BackupTaskExecutor(
             var incrementalCheckpoint = string.IsNullOrWhiteSpace(currentJob.TransferId)
                 ? string.Empty
                 : incrementalSources.TransferDirectory(currentJob.TransferId);
-            var checkpoint = task.Method == BackupMethod.ReverseIncremental
+            var checkpoint = BackupMethodPolicy.IsChunked(task.Method)
                 ? incrementalCheckpoint
                 : File.Exists(partialPath) ? partialPath : cachePath;
-            var bytes = task.Method == BackupMethod.ReverseIncremental
+            var bytes = BackupMethodPolicy.IsChunked(task.Method)
                 ? currentJob.BytesTransferred
                 : File.Exists(checkpoint) ? new FileInfo(checkpoint).Length : 0;
             MarkJob(job.Id, "Fehler", bytes, currentJob.TotalBytes, checkpoint, ex.Message);
@@ -179,6 +179,10 @@ public sealed class BackupTaskExecutor(
         var transferId = EnsureTransferId(job);
         var repositoryKey = incrementalRepository.BuildRepositoryKey(task, target, targetInstance);
         var previous = await incrementalRepository.LoadPreviousManifestAsync(task.Token, cancellationToken);
+        var baseline = task.Method == BackupMethod.Differential
+            ? await incrementalRepository.LoadBaselineManifestAsync(task.Token, cancellationToken)
+            : null;
+        var comparison = task.Method == BackupMethod.Differential ? baseline : previous;
 
         AppendStep(
             job.Id,
@@ -204,7 +208,13 @@ public sealed class BackupTaskExecutor(
                 task.ChunkSizeMiB,
                 cancellationToken,
                 selectedPaths);
-            incrementalSources.ApplyPreviousManifest(preparation.Manifest, previous, repositoryKey);
+            preparation.Manifest.Method = task.Method;
+            preparation.Manifest.ParentSnapshotToken = previous?.SnapshotToken ?? "";
+            preparation.Manifest.BaselineSnapshotToken = baseline?.SnapshotToken ?? comparison?.SnapshotToken ?? preparation.Manifest.SnapshotToken;
+            preparation.Manifest.ChainDepth = previous is null ? 0 : previous.ChainDepth + 1;
+            incrementalSources.ApplyPreviousManifest(preparation.Manifest, comparison, repositoryKey);
+            if (task.Method == BackupMethod.Differential)
+                IncrementalSourceService.MarkChunksNeededForTransition(preparation.Manifest, previous);
             await IncrementalManifestJson.WriteAsync(preparation.ManifestPath, preparation.Manifest, cancellationToken);
         }
 
@@ -222,7 +232,7 @@ public sealed class BackupTaskExecutor(
 
         AppendStep(
             job.Id,
-            "Reverse Incremental",
+            BackupMethodPolicy.Label(task.Method),
             "Started",
             "Geänderte Blöcke werden geprüft und der neue Plain-Current-Stand atomar veröffentlicht.",
             targetInstance.Name,
@@ -253,7 +263,7 @@ public sealed class BackupTaskExecutor(
         await ApplyRetentionSafelyAsync(task, target, targetInstance, job.Id, cancellationToken);
         AppendStep(
             job.Id,
-            "Reverse Incremental",
+            BackupMethodPolicy.Label(task.Method),
             "Completed",
             $"Plain Current aktualisiert. Übertragen/gespeichert: {result.StoredBytes:N0} Bytes; wiederverwendet: {result.ReusedBytes:N0} Bytes.",
             targetInstance.Name,
@@ -264,7 +274,7 @@ public sealed class BackupTaskExecutor(
             job.Id,
             "Abschluss",
             "Completed",
-            $"Reverse-Incremental-Backup erfolgreich. Weg: {route}. Snapshot {manifest.SnapshotToken}.",
+            $"{BackupMethodPolicy.Label(task.Method)}-Backup erfolgreich. Weg: {route}. Snapshot {manifest.SnapshotToken}.",
             $"{sourceInstance.Name} → {targetInstance.Name}",
             result.Destination,
             result.TotalBytes,
@@ -283,7 +293,7 @@ public sealed class BackupTaskExecutor(
         var transferId = EnsureTransferId(job);
         var credential = store.GetSmbCredential(source.Id);
         var request = new GatewaySourceRequest(transferId, source.Kind, source.Location, credential?.Username, credential?.Password, IncludedPaths: SourceSelection.Parse(task.SourceSelectionJson));
-        var payload = new IncrementalSourceCommandPayload(task.Id, task.Token, task.ChunkSizeMiB, request, job.Id, repositoryKey);
+        var payload = new IncrementalSourceCommandPayload(task.Id, task.Token, task.ChunkSizeMiB, request, job.Id, repositoryKey, task.Method);
         var commandId = commands.Queue(instance.Id, SecondaryCommandKind.PrepareIncrementalSource, transferId, payload);
         AppendStep(
             job.Id,

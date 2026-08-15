@@ -77,12 +77,12 @@
                 <option value="">Bitte wählen</option>
                 @foreach (var item in Model.Objects.Where(x => x.Direction != ObjectDirection.Target))
                 {
-                    <option value="@item.Id">@item.Name</option>
+                    <option value="@item.Id" data-kind="@item.Kind">@item.Name</option>
                 }
             </select>
         </div>
         <div class="field source-selection-field">
-            <label>Zu sichernde Ordner</label>
+            <label>Zu sichernde Inhalte</label>
             <button class="source-picker-input" id="source-picker-open" type="button">
                 <span><strong id="source-picker-title">Gesamtes Object</strong><small id="source-picker-summary">Alle Ordner und Dateien werden gesichert</small></span>
                 <svg class="ui-icon"><use href="#icon-folder"></use></svg>
@@ -106,9 +106,11 @@
             <label asp-for="Input.Method">Backup-Methode</label>
             <select asp-for="Input.Method" id="backup-method">
                 <option value="ReverseIncremental">Reverse Incremental (empfohlen)</option>
+                <option value="ForwardIncremental">Forward Incremental</option>
+                <option value="Differential">Differential</option>
                 <option value="Full">Full</option>
             </select>
-            <small>Reverse Incremental hält den aktuellen Stand direkt als normale Dateien vor und speichert nur geänderte Blöcke.</small>
+            <small>Reverse: aktueller Stand direkt lesbar. Forward: Änderungen zum Vorgänger. Differential: Änderungen zur ersten Baseline.</small>
             <span asp-validation-for="Input.Method" class="field-error"></span>
         </div>
         <div class="field" id="chunk-size-field">
@@ -227,11 +229,11 @@
         if (!method || !chunkField || !chunkSize || !compressionField || !compression) return;
 
         const updateChunkSelection = () => {
-            const isReverseIncremental = method.value === 'ReverseIncremental';
-            chunkField.hidden = !isReverseIncremental;
-            chunkSize.disabled = !isReverseIncremental;
-            compressionField.hidden = isReverseIncremental;
-            compression.disabled = isReverseIncremental;
+            const isChunked = method.value !== 'Full';
+            chunkField.hidden = !isChunked;
+            chunkSize.disabled = !isChunked;
+            compressionField.hidden = isChunked;
+            compression.disabled = isChunked;
         };
 
         method.addEventListener('change', updateChunkSelection);
@@ -291,7 +293,7 @@
         const summary = document.getElementById('source-picker-summary');
         const count = document.getElementById('source-picker-count');
         const error = document.getElementById('source-picker-error');
-        const supported = new Set(['LocalFolder', 'Smb']);
+        const supported = new Set(['LocalFolder', 'Smb', 'DockerVolume', 'Proxmox']);
         let selected = new Set(@Html.Raw(JsonSerializer.Serialize(Model.SelectedSourcePaths)));
         let draft = new Set(selected);
 
@@ -331,6 +333,7 @@
                     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.path = entry.path; checkbox.checked = isCovered(entry.path);
                     const name = document.createElement('span'); name.textContent = entry.name;
                     label.append(checkbox, name); line.append(expand, label); row.append(line);
+                    if (entry.hasChildren === false) expand.hidden = true;
                     const children = document.createElement('div'); children.className = 'source-tree-children'; children.hidden = true; row.append(children);
                     checkbox.addEventListener('change', () => toggleDraft(entry.path, checkbox.checked));
                     expand.addEventListener('click', async () => { const opening = children.hidden; children.hidden = !opening; expand.classList.toggle('open', opening); if (opening && !children.dataset.loaded) { children.dataset.loaded = 'true'; await loadChildren(children, entry.path); } });
@@ -340,6 +343,7 @@
         };
 
         document.getElementById('source-picker-open').addEventListener('click', async () => {
+            if (source.value && !supported.has(selectedOption()?.dataset.kind)) { error.textContent = 'Dieser Quelltyp bietet keine Inhaltsauswahl.'; error.hidden = false; dialog.showModal(); return; }
             if (!source.value) { error.textContent = 'Bitte zuerst ein Quell-Object auswählen.'; error.hidden = false; dialog.showModal(); return; }
             draft = new Set(selected); updateDraftCount(); dialog.showModal(); await loadChildren(tree);
         });

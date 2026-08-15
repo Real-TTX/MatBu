@@ -25,16 +25,17 @@
         </div>
         <div class="field">
             <label asp-for="Input.Kind">Typ</label>
-            <select asp-for="Input.Kind">
+            <select asp-for="Input.Kind" id="object-kind">
                 <option value="Smb">SMB</option>
                 <option value="LocalFolder">Lokaler Ordner</option>
                 <option value="MatBuSlave">MatBu Slave</option>
                 <option value="DockerVolume">Docker Volume</option>
+                <option value="Proxmox">Proxmox VE</option>
             </select>
         </div>
         <div class="field">
             <label asp-for="Input.Direction">Richtung</label>
-            <select asp-for="Input.Direction">
+            <select asp-for="Input.Direction" id="object-direction">
                 <option value="Source">Quelle</option>
                 <option value="Target">Ziel</option>
                 <option value="Both">Beides</option>
@@ -54,6 +55,7 @@
         <div class="field" style="grid-column:1/-1">
             <label asp-for="Input.Location">Adresse / Volume-Name</label>
             <input asp-for="Input.Location" placeholder="\\server\freigabe\unterordner" required />
+            <small id="proxmox-location-help" hidden>Proxmox: <code>https://pve:8006/?node=pve&amp;storage=local&amp;path=/proxmox-dump&amp;verifyTls=false</code>. <code>path</code> muss in der zugeordneten MatBu-Instanz gemountet sein.</small>
             @if (!string.IsNullOrWhiteSpace(Model.SmbPathSummary))
             {
                 <small class="path-summary">Erkannt: @Model.SmbPathSummary</small>
@@ -68,12 +70,12 @@
             <input asp-for="Input.Detail" />
         </div>
         <div class="field">
-            <label asp-for="SmbUsername">SMB-Benutzername</label>
-            <input asp-for="SmbUsername" autocomplete="username" placeholder="DOMAIN\benutzer oder benutzer" />
-            <small>Leer lassen bedeutet Gastzugriff.</small>
+            <label asp-for="SmbUsername">Benutzer / API Token-ID</label>
+            <input asp-for="SmbUsername" autocomplete="username" placeholder="DOMAIN\benutzer oder matbu@pve!backup" />
+            <small id="credential-help">Leer lassen bedeutet bei SMB Gastzugriff.</small>
         </div>
         <div class="field">
-            <label asp-for="SmbPassword">SMB-Passwort</label>
+            <label asp-for="SmbPassword">Passwort / API Token-Secret</label>
             <input asp-for="SmbPassword" type="password" autocomplete="new-password" placeholder="leer = gespeichertes Passwort behalten" />
             <small>@(Model.HasStoredSmbCredential ? "Ein verschlüsseltes Passwort ist gespeichert." : "Noch kein Passwort gespeichert.")</small>
         </div>
@@ -103,3 +105,23 @@
     </div>
     <small>„Speichern &amp; testen“ verwendet sofort die aktuell eingegebenen Werte und Zugangsdaten.</small>
 </form>
+
+<script>
+    (() => {
+        const kind = document.getElementById('object-kind');
+        const direction = document.getElementById('object-direction');
+        const proxmoxHelp = document.getElementById('proxmox-location-help');
+        const credentialHelp = document.getElementById('credential-help');
+        if (!kind || !direction || !proxmoxHelp || !credentialHelp) return;
+        const update = () => {
+            const isProxmox = kind.value === 'Proxmox';
+            proxmoxHelp.hidden = !isProxmox;
+            credentialHelp.textContent = isProxmox
+                ? 'Erforderlich: vollständige API Token-ID, zum Beispiel matbu@pve!backup.'
+                : 'Leer lassen bedeutet bei SMB Gastzugriff.';
+            if (isProxmox) direction.value = 'Source';
+        };
+        kind.addEventListener('change', update);
+        update();
+    })();
+</script>

@@ -26,6 +26,12 @@ public sealed class ReverseIncrementalRepositoryService(
         return File.Exists(latest) ? await IncrementalManifestJson.ReadAsync(latest, cancellationToken) : null;
     }
 
+    public async Task<IncrementalBackupManifest?> LoadBaselineManifestAsync(string taskToken, CancellationToken cancellationToken)
+    {
+        var baseline = CatalogBaselinePath(taskToken);
+        return File.Exists(baseline) ? await IncrementalManifestJson.ReadAsync(baseline, cancellationToken) : null;
+    }
+
     public async Task<IncrementalBackupManifest> LoadSnapshotManifestAsync(string taskToken, string snapshotToken, CancellationToken cancellationToken)
     {
         var path = CatalogSnapshotPath(taskToken, snapshotToken);
@@ -499,7 +505,7 @@ public sealed class ReverseIncrementalRepositoryService(
                 TaskId = task.Id,
                 TransferJobId = job.Id,
                 Token = manifest.SnapshotToken,
-                Method = BackupMethod.ReverseIncremental,
+                Method = task.Method,
                 State = "Completed",
                 RootPath = result.Destination,
                 ManifestPath = result.RepositoryManifestPath,
@@ -512,7 +518,7 @@ public sealed class ReverseIncrementalRepositoryService(
             });
             var currentJob = data.TransferJobs.FirstOrDefault(item => item.Id == job.Id);
             if (currentJob is null) return;
-            currentJob.Method = BackupMethod.ReverseIncremental;
+            currentJob.Method = task.Method;
             currentJob.SnapshotId = snapshotId;
             currentJob.SourceBytes = result.TotalBytes;
             currentJob.StoredBytes = result.StoredBytes;
@@ -609,9 +615,12 @@ public sealed class ReverseIncrementalRepositoryService(
         var snapshotPath = CatalogSnapshotPath(taskToken, manifest.SnapshotToken);
         await IncrementalManifestJson.WriteAsync(snapshotPath, manifest, cancellationToken);
         await IncrementalManifestJson.WriteAsync(CatalogLatestPath(taskToken), manifest, cancellationToken);
+        var baselinePath = CatalogBaselinePath(taskToken);
+        if (!File.Exists(baselinePath)) await IncrementalManifestJson.WriteAsync(baselinePath, manifest, cancellationToken);
     }
 
     private string CatalogLatestPath(string taskToken) => Path.Combine(CatalogRoot(taskToken), "latest.json");
+    private string CatalogBaselinePath(string taskToken) => Path.Combine(CatalogRoot(taskToken), "baseline.json");
     private string CatalogSnapshotPath(string taskToken, string snapshotToken) => Path.Combine(CatalogRoot(taskToken), "snapshots", snapshotToken + ".json");
     private string CatalogRoot(string taskToken) => Path.Combine(_dataPath, "repository-catalog", SafeToken(taskToken));
 

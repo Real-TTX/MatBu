@@ -36,6 +36,42 @@ docker compose -f docker-compose.release.yml up -d
 - serverseitige Razor Pages fuer Dashboard, Tasks, Objects, Benutzer und Jobs
 - CI-Farbe `#0b7f8a` mit System/Hell/Dunkel-Darstellung
 - Monitoring-Health-Endpunkt mit persistentem Admin-Token
+- Full, Forward Incremental, Differential und Reverse Incremental mit SHA-256-Chunk-Katalogen
+- Proxmox VE als Quelle mit API-Token, VM-/CT-Auswahl und `vzdump`-Snapshots
+
+## Proxmox VE als Quelle
+
+MatBu startet den nativen `vzdump`-Snapshot auf Proxmox und nimmt die entstandene VMA-/LXC-Datei anschließend in den normalen, wiederaufnehmbaren Backup-Transfer auf. Das funktioniert auch über eine Secondary: Die Secondary verbindet sich ausgehend mit der Primary, startet `vzdump` in ihrem Netz und überträgt nur über diese bestehende Verbindung.
+
+Voraussetzungen:
+
+- API-Token mit mindestens `VM.Backup` für die gewählten Gäste sowie Schreibrecht auf dem Proxmox-Storage
+- ein Dump-Storage, dessen `dump`-Verzeichnis sowohl Proxmox als auch die ausführende MatBu-Instanz sehen
+- der gemeinsame Dump-Pfad wird im MatBu-Container als `/proxmox-dump` gemountet
+
+Beispiel für die Primary:
+
+```powershell
+$env:MATBU_PROXMOX_DUMP_PATH = "X:\proxmox-dump"
+docker compose -f docker-compose.yml -f docker-compose.proxmox.yml up -d --build
+```
+
+Für eine Secondary wird entsprechend `docker-compose.secondary.yml` zusammen mit `docker-compose.secondary.proxmox.yml` verwendet. Das Object erhält diese Adresse:
+
+```text
+https://pve.example:8006/?node=pve-01&storage=matbu&path=/proxmox-dump&verifyTls=false
+```
+
+Als Benutzer wird die vollständige Token-ID wie `matbu@pve!backup`, als Passwort das Token-Secret gespeichert. `verifyTls=false` ist ausschließlich für selbstsignierte Testinstallationen gedacht. Der Object-Test prüft API, Token und den lokalen Dump-Mount. Nach erfolgreicher Aufnahme entfernt MatBu nur die von diesem Lauf erzeugte temporäre Dump-Datei.
+
+## Backup-Methoden
+
+- **Full:** jedes Mal ein eigenständiges Archiv; einfach, aber höchster Speicher- und Transferbedarf.
+- **Forward Incremental:** vergleicht gegen den letzten Stand und überträgt nur neue SHA-256-Chunks.
+- **Differential:** vergleicht jeden Lauf gegen die feste Baseline; ein Restore benötigt logisch nur Baseline und gewünschten Stand.
+- **Reverse Incremental:** hält `current` als direkt lesbaren aktuellen Stand und versioniert ersetzte Chunks im Repository.
+
+Alle blockbasierten Varianten verwenden 4, 8, 16 oder 32 MiB große Chunks, deduplizieren identische Inhalte und behalten Manifest, Parent, Baseline und Chain-Tiefe pro Snapshot. Bei Verbindungsabbruch bleiben geprüfte Chunks und Transfer-Checkpoints erhalten; der nächste Versuch setzt fehlende Daten fort.
 
 ## Monitoring-API
 

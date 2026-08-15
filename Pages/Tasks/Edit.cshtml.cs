@@ -51,7 +51,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
             SelectedSourcePaths = SourceSelection.Parse(Input.SourceSelectionJson).ToList();
         }
 
-        if (Input.Method == BackupMethod.ReverseIncremental && !ValidChunkSizesMiB.Contains(Input.ChunkSizeMiB))
+        if (BackupMethodPolicy.IsChunked(Input.Method) && !ValidChunkSizesMiB.Contains(Input.ChunkSizeMiB))
             Input.ChunkSizeMiB = 8;
         Input.Schedule = BackupSchedule.Normalize(Input.Schedule);
         LoadScheduleFields(Input.Schedule);
@@ -136,7 +136,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
         if (source is null) return NotFound(new { message = "Das Quell-Object wurde nicht gefunden." });
         var instance = data.Instances.FirstOrDefault(item => item.Id == source.InstanceId);
         if (instance is null) return NotFound(new { message = "Die zugeordnete Instanz wurde nicht gefunden." });
-        if (source.Kind is not (ObjectKind.LocalFolder or ObjectKind.Smb or ObjectKind.DockerVolume))
+        if (source.Kind is not (ObjectKind.LocalFolder or ObjectKind.Smb or ObjectKind.DockerVolume or ObjectKind.Proxmox))
             return BadRequest(new { message = "Für diesen Quelltyp ist keine Ordnerauswahl verfügbar." });
 
         try
@@ -176,7 +176,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
 
     private void ValidateBackupMethod()
     {
-        if (Input.Method is not (BackupMethod.Full or BackupMethod.ReverseIncremental))
+        if (!Enum.IsDefined(Input.Method))
         {
             ModelState.AddModelError("Input.Method", "Bitte eine gültige Backup-Methode auswählen.");
             return;
@@ -192,7 +192,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
 
         Input.Compression = BackupCompression.None;
         if (!ValidChunkSizesMiB.Contains(Input.ChunkSizeMiB))
-            ModelState.AddModelError("Input.ChunkSizeMiB", "Für Reverse Incremental sind 4, 8, 16 oder 32 MiB erlaubt.");
+            ModelState.AddModelError("Input.ChunkSizeMiB", "Für blockbasierte Methoden sind 4, 8, 16 oder 32 MiB erlaubt.");
     }
 
     private void ValidateRetryPolicy()

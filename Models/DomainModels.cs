@@ -2,7 +2,7 @@ namespace MatBu.Models;
 
 using System.ComponentModel.DataAnnotations.Schema;
 
-public enum ObjectKind { Smb, LocalFolder, MatBuSlave, DockerVolume }
+public enum ObjectKind { Smb, LocalFolder, MatBuSlave, DockerVolume, Proxmox }
 public enum ObjectDirection { Source, Target, Both }
 public enum ObjectStatus { Healthy, Warning, Offline }
 public enum UserRole { Admin, User, Operator }
@@ -21,7 +21,7 @@ public enum SecondaryCommandKind
     ApplyRetention,
     BrowseSource
 }
-public enum BackupMethod { Full, ReverseIncremental }
+public enum BackupMethod { Full, ForwardIncremental, Differential, ReverseIncremental }
 public enum BackupCompression { None, Fast, Balanced, Maximum }
 public enum BackupConsistencyMode { None, DockerPause, DockerExec }
 

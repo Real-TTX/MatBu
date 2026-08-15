@@ -118,7 +118,7 @@ public sealed class RestoreArchiveService(
         if (!Enum.TryParse<ObjectKind>(job.TargetObjectKind, true, out var targetKind))
             throw new InvalidOperationException($"Der Zieltyp '{job.TargetObjectKind}' kann nicht gelesen werden.");
 
-        if (job.Method == BackupMethod.ReverseIncremental)
+        if (BackupMethodPolicy.IsChunked(job.Method))
             return await EnsureIncrementalArchiveAvailableAsync(job, targetKind, cancellationToken);
 
         var data = store.Read();
@@ -188,7 +188,7 @@ public sealed class RestoreArchiveService(
             Id = job.TaskId,
             Token = job.TaskToken,
             Name = job.TaskName,
-            Method = BackupMethod.ReverseIncremental
+            Method = job.Method
         };
         var target = new BackupObject
         {

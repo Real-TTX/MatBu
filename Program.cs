@@ -19,6 +19,7 @@ builder.Services.AddProblemDetails();
 builder.Services.AddHostedService<BackupScheduler>();
 builder.Services.AddHostedService<DockerVolumeBackupWorker>();
 builder.Services.AddSingleton<SmbClientService>();
+builder.Services.AddSingleton<ProxmoxService>();
 builder.Services.AddSingleton<ObjectConnectivityTester>();
 builder.Services.AddHttpClient(nameof(SecondaryGatewayClient), client => client.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddHttpClient("SecondaryTransfer", client => client.Timeout = TimeSpan.FromMinutes(10));
@@ -192,7 +193,16 @@ app.MapPost("/api/secondary/transfers/{transferId}/incremental-manifest", async 
 
     var repositoryKey = repository.BuildRepositoryKey(task, target, targetInstance);
     var previous = await repository.LoadPreviousManifestAsync(task.Token, cancellationToken);
-    incrementalSources.ApplyPreviousManifest(manifest, previous, repositoryKey);
+    var baseline = manifest.Method == BackupMethod.Differential
+        ? await repository.LoadBaselineManifestAsync(task.Token, cancellationToken)
+        : null;
+    var comparison = manifest.Method == BackupMethod.Differential ? baseline : previous;
+    manifest.ParentSnapshotToken = previous?.SnapshotToken ?? "";
+    manifest.BaselineSnapshotToken = baseline?.SnapshotToken ?? comparison?.SnapshotToken ?? manifest.SnapshotToken;
+    manifest.ChainDepth = previous is null ? 0 : previous.ChainDepth + 1;
+    incrementalSources.ApplyPreviousManifest(manifest, comparison, repositoryKey);
+    if (manifest.Method == BackupMethod.Differential)
+        IncrementalSourceService.MarkChunksNeededForTransition(manifest, previous);
     await IncrementalManifestJson.WriteAsync(incrementalSources.ManifestPath(transferId), manifest, cancellationToken);
     var missing = incrementalSources.FindMissingChangedHashes(manifest, transferId);
     return Results.Ok(new IncrementalManifestUploadResult(
@@ -305,9 +315,9 @@ app.MapPost("/api/tasks", (BackupTask task, HttpContext context, PersistentStore
         return Results.BadRequest(new { message = "Der Zeitplan ist ungültig." });
     task.Schedule = BackupSchedule.Normalize(task.Schedule);
     task.SourceSelectionJson = SourceSelection.Serialize(SourceSelection.Parse(task.SourceSelectionJson));
-    if (task.Method == BackupMethod.ReverseIncremental && task.ChunkSizeMiB is not (4 or 8 or 16 or 32))
+    if (BackupMethodPolicy.IsChunked(task.Method) && task.ChunkSizeMiB is not (4 or 8 or 16 or 32))
         return Results.BadRequest(new { message = "Reverse Incremental benötigt 4, 8, 16 oder 32 MiB Chunkgröße." });
-    if (task.Method == BackupMethod.ReverseIncremental) task.Compression = BackupCompression.None;
+    if (BackupMethodPolicy.IsChunked(task.Method)) task.Compression = BackupCompression.None;
     if (task.MaxRetryAttempts is < 1 or > 20 || task.RetryDelayMinutes is < 1 or > 1440)
         return Results.BadRequest(new { message = "Retry-Konfiguration ungültig: 1–20 Versuche und 1–1440 Minuten Basiswartezeit sind erlaubt." });
     var data = store.Read();
@@ -339,9 +349,9 @@ app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, HttpContext contex
         return Results.BadRequest(new { message = "Der Zeitplan ist ungültig." });
     task.Schedule = BackupSchedule.Normalize(task.Schedule);
     task.SourceSelectionJson = SourceSelection.Serialize(SourceSelection.Parse(task.SourceSelectionJson));
-    if (task.Method == BackupMethod.ReverseIncremental && task.ChunkSizeMiB is not (4 or 8 or 16 or 32))
+    if (BackupMethodPolicy.IsChunked(task.Method) && task.ChunkSizeMiB is not (4 or 8 or 16 or 32))
         return Results.BadRequest(new { message = "Reverse Incremental benötigt 4, 8, 16 oder 32 MiB Chunkgröße." });
-    if (task.Method == BackupMethod.ReverseIncremental) task.Compression = BackupCompression.None;
+    if (BackupMethodPolicy.IsChunked(task.Method)) task.Compression = BackupCompression.None;
     if (task.MaxRetryAttempts is < 1 or > 20 || task.RetryDelayMinutes is < 1 or > 1440)
         return Results.BadRequest(new { message = "Retry-Konfiguration ungültig: 1–20 Versuche und 1–1440 Minuten Basiswartezeit sind erlaubt." });
     var data = store.Read();
@@ -391,14 +401,14 @@ app.MapDelete("/api/tasks/{id:long}", (long id, PersistentStore store) =>
 app.MapGet("/api/objects", (PersistentStore store) =>
 {
     var data = store.Read();
-    foreach (var item in data.Objects.Where(x => x.Kind == ObjectKind.Smb)) item.SmbUsername = store.GetSmbCredential(item.Id)?.Username;
+    foreach (var item in data.Objects.Where(x => UsesCredentials(x.Kind))) item.SmbUsername = store.GetSmbCredential(item.Id)?.Username;
     return Results.Ok(data.Objects);
 });
 app.MapGet("/api/objects/{id:long}", (long id, PersistentStore store) =>
 {
     var item = store.Read().Objects.FirstOrDefault(x => x.Id == id);
     if (item is null) return Results.NotFound();
-    if (item.Kind == ObjectKind.Smb) item.SmbUsername = store.GetSmbCredential(item.Id)?.Username;
+    if (UsesCredentials(item.Kind)) item.SmbUsername = store.GetSmbCredential(item.Id)?.Username;
     return Results.Ok(item);
 });
 app.MapPost("/api/objects", (ObjectUpsertRequest request, PersistentStore store) =>
@@ -408,7 +418,7 @@ app.MapPost("/api/objects", (ObjectUpsertRequest request, PersistentStore store)
     item.Id = store.NextId(store.Read().Objects.Select(x => x.Id));
     item.Status = ObjectStatus.Healthy;
     item.CreateDate = item.UpdateDate = DateTimeOffset.UtcNow;
-    store.Update(data => { data.SmbCredentials.RemoveAll(x => x.ObjectId == item.Id); data.Objects.Add(item); if (item.Kind == ObjectKind.Smb && !string.IsNullOrWhiteSpace(request.SmbUsername) && request.SmbPassword is not null) store.SetSmbCredential(data, item.Id, request.SmbUsername, request.SmbPassword); });
+    store.Update(data => { data.SmbCredentials.RemoveAll(x => x.ObjectId == item.Id); data.Objects.Add(item); if (UsesCredentials(item.Kind) && !string.IsNullOrWhiteSpace(request.SmbUsername) && request.SmbPassword is not null) store.SetSmbCredential(data, item.Id, request.SmbUsername, request.SmbPassword); });
     return Results.Created($"/api/objects/{item.Id}", item);
 });
 app.MapPut("/api/objects/{id:long}", (long id, ObjectUpsertRequest request, PersistentStore store) =>
@@ -421,7 +431,7 @@ app.MapPut("/api/objects/{id:long}", (long id, ObjectUpsertRequest request, Pers
     {
         var target = data.Objects.First(x => x.Id == id);
         target.Name = item.Name; target.Kind = item.Kind; target.Direction = item.Direction; target.Location = item.Location; target.Detail = item.Detail; target.InstanceId = item.InstanceId; target.UpdateDate = DateTimeOffset.UtcNow;
-        if (item.Kind != ObjectKind.Smb) data.SmbCredentials.RemoveAll(x => x.ObjectId == id);
+        if (!UsesCredentials(item.Kind)) data.SmbCredentials.RemoveAll(x => x.ObjectId == id);
         else if (!string.IsNullOrWhiteSpace(request.SmbUsername))
         {
             var password = request.SmbPassword ?? store.GetSmbCredential(id)?.Password;
@@ -492,6 +502,8 @@ static AppUser? CurrentUser(HttpContext context, PersistentStore store)
     var session = data.UserSessions.FirstOrDefault(item => item.Token == context.Request.Cookies["matbu_session"] && item.ExpiresDate > DateTimeOffset.UtcNow);
     return session is null ? null : data.Users.FirstOrDefault(item => item.Id == session.UserId);
 }
+
+static bool UsesCredentials(ObjectKind kind) => kind is ObjectKind.Smb or ObjectKind.Proxmox;
 
 static string? ValidateConsistency(BackupTask task)
 {

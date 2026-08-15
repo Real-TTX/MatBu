@@ -1,0 +1,4 @@
+services:
+  matbu:
+    volumes:
+      - ${MATBU_PROXMOX_DUMP_PATH:?set MATBU_PROXMOX_DUMP_PATH to the mounted Proxmox dump directory}:/proxmox-dump

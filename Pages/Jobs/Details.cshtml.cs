@@ -1,6 +1,7 @@
 using System.Globalization;
 using MatBu.Data;
 using MatBu.Models;
+using MatBu.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MatBu.Pages.Jobs;
@@ -20,7 +21,7 @@ public class DetailsModel(PersistentStore store) : AppPageModel(store)
     public string TargetLocation { get; private set; } = "";
     public string TargetInstanceName { get; private set; } = "";
     public string ActualDestination { get; private set; } = "—";
-    public string MethodName => Job.Method == BackupMethod.ReverseIncremental ? "Reverse Incremental" : "Full";
+    public string MethodName => BackupMethodPolicy.Label(Job.Method);
     public string SnapshotLabel
     {
         get

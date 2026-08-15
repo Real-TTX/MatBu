@@ -3,7 +3,7 @@ using MatBu.Models;
 
 namespace MatBu.Services;
 
-public sealed class ObjectConnectivityTester(SmbClientService smbClient)
+public sealed class ObjectConnectivityTester(SmbClientService smbClient, ProxmoxService proxmox)
 {
     public async Task<GatewayObjectTestResult> TestAsync(
         BackupObject item,
@@ -23,6 +23,9 @@ public sealed class ObjectConnectivityTester(SmbClientService smbClient)
 
         if (item.Kind == ObjectKind.DockerVolume)
             return new GatewayObjectTestResult(true, "Docker-Volume wird durch den lokalen Worker geprüft.", started.ElapsedMilliseconds);
+
+        if (item.Kind == ObjectKind.Proxmox)
+            return await proxmox.TestAsync(item.Location, username, password, cancellationToken);
 
         if (item.Kind != ObjectKind.Smb)
             return new GatewayObjectTestResult(false, "Dieser Object-Typ unterstützt keinen lokalen Verbindungstest.", started.ElapsedMilliseconds);

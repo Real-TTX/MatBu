@@ -22,8 +22,8 @@ public class IndexModel(PersistentStore store) : AppPageModel(store)
     public int TotalPages { get; private set; }
     public bool CanEdit => CurrentUser?.Role != UserRole.User;
     public string GetInstanceName(long instanceId) => InstanceNames.TryGetValue(instanceId, out var name) ? name : "Unbekannte Instanz";
-    public string GetMethodSummary(BackupTask task) => task.Method == BackupMethod.ReverseIncremental
-        ? $"Reverse Incremental · {task.ChunkSizeMiB} MiB · {GetSelectionSummary(task)}"
+    public string GetMethodSummary(BackupTask task) => BackupMethodPolicy.IsChunked(task.Method)
+        ? $"{BackupMethodPolicy.Label(task.Method)} · {task.ChunkSizeMiB} MiB · {GetSelectionSummary(task)}"
         : $"Full · {GetSelectionSummary(task)}";
     private static string GetSelectionSummary(BackupTask task)
     {

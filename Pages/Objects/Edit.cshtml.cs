@@ -126,6 +126,20 @@ public class EditModel(
         if (!Instances.Any(instance => instance.Id == Input.InstanceId))
             ModelState.AddModelError("Input.InstanceId", "Die ausgewählte Instanz existiert nicht.");
 
+        if (Input.Kind == ObjectKind.Proxmox)
+        {
+            Input.Direction = ObjectDirection.Source;
+            try { _ = ProxmoxLocation.Parse(Input.Location); }
+            catch (FormatException exception) { ModelState.AddModelError("Input.Location", exception.Message); }
+
+            var storedProxmoxCredential = Id is null ? null : Store.GetSmbCredential(Id.Value);
+            var reusesProxmoxSecret = storedProxmoxCredential is not null &&
+                string.Equals(storedProxmoxCredential.Value.Username, SmbUsername?.Trim(), StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(SmbUsername)) ModelState.AddModelError(nameof(SmbUsername), "Die Proxmox API Token-ID fehlt.");
+            if (string.IsNullOrEmpty(SmbPassword) && !reusesProxmoxSecret) ModelState.AddModelError(nameof(SmbPassword), "Das Proxmox API Token-Secret fehlt.");
+            return ModelState.IsValid;
+        }
+
         if (Input.Kind != ObjectKind.Smb)
             return ModelState.IsValid;
 
@@ -190,8 +204,8 @@ public class EditModel(
             }
 
             data.SmbCredentials.RemoveAll(credential => credential.ObjectId == objectId.Value &&
-                (Input.Kind != ObjectKind.Smb || string.IsNullOrWhiteSpace(normalizedUsername)));
-            if (Input.Kind == ObjectKind.Smb && !string.IsNullOrWhiteSpace(normalizedUsername) && passwordToStore is not null)
+                (!UsesCredentials(Input.Kind) || string.IsNullOrWhiteSpace(normalizedUsername)));
+            if (UsesCredentials(Input.Kind) && !string.IsNullOrWhiteSpace(normalizedUsername) && passwordToStore is not null)
                 Store.SetSmbCredential(data, objectId.Value, normalizedUsername, passwordToStore);
         });
 
@@ -207,4 +221,6 @@ public class EditModel(
     }
 
     private void SetPageMetadata() => ViewData["UserName"] = CurrentUser?.UserName;
+
+    private static bool UsesCredentials(ObjectKind kind) => kind is ObjectKind.Smb or ObjectKind.Proxmox;
 }
