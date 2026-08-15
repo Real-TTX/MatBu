@@ -63,3 +63,16 @@ Full-Jobs können optional Docker-Container nur während der lokalen Quellaufnah
 3. Master-/Slave-Handshake über HTTPS und Monitoring-/Notification-API
 
 Der initiale lokale Zugang lautet `admin` / `admin` und sollte vor produktivem Einsatz geändert werden.
+## Tests
+
+Die schnellen Kernlogik-Tests laufen mit:
+
+```powershell
+dotnet test tests/MatBu.Tests/MatBu.Tests.csproj
+```
+
+Der isolierte End-to-End-Lauf baut Primary, Worker und Secondary neu, verwendet Port `9294`, prüft Gateway-Backup, Secondary-Ausfall, Wiederaufnahme sowie Docker-Pause-Cleanup und entfernt danach nur seine eigenen Volumes:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/e2e/Run-MatBuE2E.ps1
+```

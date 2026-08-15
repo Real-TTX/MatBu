@@ -77,8 +77,12 @@ public sealed class SecondaryCommandService(PersistentStore store)
 
     public SecondaryCommand? Get(long id) => store.Read().SecondaryCommands.FirstOrDefault(x => x.Id == id);
 
-    public async Task<SecondaryCommand> WaitForCompletionAsync(long commandId, CancellationToken cancellationToken)
+    public Task<SecondaryCommand> WaitForCompletionAsync(long commandId, CancellationToken cancellationToken) =>
+        WaitForCompletionAsync(commandId, ResolveInactivityTimeout(), cancellationToken);
+
+    public async Task<SecondaryCommand> WaitForCompletionAsync(long commandId, TimeSpan inactivityTimeout, CancellationToken cancellationToken)
     {
+        if (inactivityTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(inactivityTimeout));
         DateTimeOffset? missingSince = null;
         while (true)
         {
@@ -93,9 +97,19 @@ public sealed class SecondaryCommandService(PersistentStore store)
             {
                 missingSince = null;
                 if (command.State is "Completed" or "Failed") return command;
+                if (DateTimeOffset.UtcNow - command.UpdateDate > inactivityTimeout)
+                    throw new TimeoutException($"Secondary-Kommando {commandId} hat seit {inactivityTimeout.TotalSeconds:0} Sekunden keinen Fortschritt gemeldet.");
             }
             await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
         }
+    }
+
+    public static TimeSpan ResolveInactivityTimeout()
+    {
+        var configured = Environment.GetEnvironmentVariable("MATBU_SECONDARY_COMMAND_IDLE_TIMEOUT_SECONDS");
+        return int.TryParse(configured, out var seconds)
+            ? TimeSpan.FromSeconds(Math.Clamp(seconds, 5, 3600))
+            : TimeSpan.FromMinutes(2);
     }
 
     public bool Complete(string token, long commandId, bool success, string resultJson, string error)

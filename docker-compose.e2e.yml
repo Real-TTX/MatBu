@@ -1,0 +1,54 @@
+services:
+  primary:
+    build: .
+    container_name: matbu-e2e-primary
+    ports:
+      - "9294:9293"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      MATBU_DATA_PATH: /data
+      MATBU_SECONDARY_COMMAND_IDLE_TIMEOUT_SECONDS: "5"
+    volumes:
+      - e2e-primary-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  worker:
+    build: .
+    container_name: matbu-e2e-worker
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      MATBU_DATA_PATH: /data
+      MATBU_DOCKER_WORKER: "true"
+      MATBU_SECONDARY_COMMAND_IDLE_TIMEOUT_SECONDS: "5"
+    volumes:
+      - e2e-primary-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - primary
+
+  secondary:
+    build: .
+    container_name: matbu-e2e-secondary
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      MATBU_DATA_PATH: /data
+      MATBU_INSTANCE_ROLE: Secondary
+      MATBU_INSTANCE_TOKEN: matbu-e2e-secondary-token
+      MATBU_PRIMARY_ENDPOINT: http://primary:9293
+    volumes:
+      - e2e-secondary-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - primary
+
+  consistency-helper:
+    build: .
+    container_name: matbu-e2e-consistency-helper
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do sleep 3600; done"]
+
+volumes:
+  e2e-primary-data:
+    name: matbu-e2e-primary-data
+  e2e-secondary-data:
+    name: matbu-e2e-secondary-data

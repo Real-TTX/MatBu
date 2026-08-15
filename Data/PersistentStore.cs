@@ -33,6 +33,7 @@ public sealed class PersistentStore
         _instanceTokenProtector = _dataProtectionProvider.CreateProtector("MatBu.InstanceToken.v1");
         var builder = new DbContextOptionsBuilder<MatBuDbContext>().UseSqlite($"Data Source={Path.Combine(directory, "matbu.db")}");
         _options = builder.Options;
+        using var initializationLock = AcquireProcessLock();
         using var db = new MatBuDbContext(_options);
         db.Database.EnsureCreated();
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupObject ADD COLUMN InstanceId INTEGER NOT NULL DEFAULT 1"); } catch (SqliteException) { }
