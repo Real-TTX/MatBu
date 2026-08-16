@@ -5,12 +5,12 @@ services:
     image: matbu:latest
     build: .
     restart: unless-stopped
-    env_file:
-      - ${MATBU_REMOTE_ENV_FILE:-.env.remote-secondary}
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       MATBU_DATA_PATH: /data
       MATBU_INSTANCE_ROLE: Secondary
+      MATBU_PRIMARY_ENDPOINT: "https://backup.example.de"
+      MATBU_INSTANCE_TOKEN: "HIER-TOKEN-EINTRAGEN"
     volumes:
       - matbu-remote-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro

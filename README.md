@@ -24,13 +24,7 @@ Der Release-Stack bindet Port 9293 standardmäßig nur an `127.0.0.1`. Für Zugr
 
 ## Secondary in einem entfernten Netzwerk testen
 
-Auf der Primary zuerst unter **Instanzen** eine Secondary anlegen und deren Instance-Token kopieren. Im Projektordner des entfernten Docker-Hosts anschließend nur die Beispielkonfiguration kopieren und die zwei Werte eintragen:
-
-```bash
-cp .env.remote-secondary.example .env.remote-secondary
-```
-
-Danach startet ein einziger Befehl die Secondary:
+Auf der Primary zuerst unter **Instanzen** eine Secondary anlegen und deren Instance-Token kopieren. Dann in `docker-compose.remote-secondary.yml` nur `MATBU_PRIMARY_ENDPOINT` und `MATBU_INSTANCE_TOKEN` direkt ersetzen. Danach startet ein einziger Befehl die Secondary:
 
 ```bash
 docker compose -f docker-compose.remote-secondary.yml up -d --build
