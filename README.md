@@ -2,6 +2,8 @@
 
 MatBu (Matthix + Backup) ist die Basis für einen robusten Backup- und Sync-Server mit Master-/Slave-Verbindungen über HTTPS.
 
+Full-Archive erhalten eine SHA-256-Prüfsumme, die im Job gespeichert und bei Gateway-Transfers, lokalen Zielkopien sowie vor einem Restore erneut geprüft wird. Beschädigte oder unvollständige Transfers werden verworfen und über den vorhandenen Checkpoint-/Retry-Pfad neu übertragen.
+
 ## Starten
 
 ```powershell

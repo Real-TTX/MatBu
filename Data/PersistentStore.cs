@@ -67,6 +67,7 @@ public sealed class PersistentStore
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN TargetInstanceId INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN TargetInstanceName TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ResolvedDestination TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ArchiveSha256 TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN Token TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN Method TEXT NOT NULL DEFAULT 'Full'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupTask ADD COLUMN ChunkSizeMiB INTEGER NOT NULL DEFAULT 8"); } catch (SqliteException) { }

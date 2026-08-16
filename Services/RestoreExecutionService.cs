@@ -9,7 +9,8 @@ public sealed record SecondaryRestorePayload(
     GatewayTargetRequest Target,
     long RestoreJobId,
     long TotalBytes,
-    string RestoreFolderName);
+    string RestoreFolderName,
+    string Sha256);
 
 public sealed record RestoreExecutionResult(
     long RestoreJobId,
@@ -59,6 +60,7 @@ public sealed class RestoreExecutionService(
         try
         {
             var package = await BuildPackageAsync(sourceJob, normalizedPaths, restoreFolderName, packagePath, cancellationToken);
+            var packageSha256 = await ArchiveIntegrity.ComputeSha256Async(packagePath, cancellationToken);
             AppendStep(
                 restoreJobId,
                 "Restore-Paket",
@@ -71,7 +73,7 @@ public sealed class RestoreExecutionService(
                 userId);
 
             var destination = targetInstance.Role == InstanceRole.Secondary
-                ? await ApplyOnSecondaryAsync(restoreJobId, target, targetInstance, transferId, package.PackageBytes, restoreFolderName, cancellationToken)
+                ? await ApplyOnSecondaryAsync(restoreJobId, target, targetInstance, transferId, package.PackageBytes, packageSha256, restoreFolderName, cancellationToken)
                 : await ApplyOnPrimaryAsync(target, targetInstance, packagePath, restoreFolderName, cancellationToken);
 
             CompleteRestoreJob(restoreJobId, destination, package.PackageBytes);
@@ -185,6 +187,7 @@ public sealed class RestoreExecutionService(
         MatBuInstance instance,
         string transferId,
         long packageBytes,
+        string packageSha256,
         string restoreFolderName,
         CancellationToken cancellationToken)
     {
@@ -192,7 +195,8 @@ public sealed class RestoreExecutionService(
             new GatewayTargetRequest(restoreJobId, target.Kind, target.Location, null, null),
             restoreJobId,
             packageBytes,
-            restoreFolderName);
+            restoreFolderName,
+            packageSha256);
         var commandId = commands.Queue(instance.Id, SecondaryCommandKind.ApplyRestore, transferId, payload);
         AppendStep(
             restoreJobId,

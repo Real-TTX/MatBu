@@ -109,6 +109,7 @@ public sealed class TransferJob
     public long TargetInstanceId { get; set; }
     public string TargetInstanceName { get; set; } = "";
     public string ResolvedDestination { get; set; } = "";
+    public string ArchiveSha256 { get; set; } = "";
     public bool RetentionExpired { get; set; }
     public string Error { get; set; } = "";
     public DateTimeOffset CreateDate { get; set; }

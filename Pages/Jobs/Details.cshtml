@@ -37,6 +37,7 @@
 <div class="actual-destination panel">
     <span class="route-label">Tatsächlich geschrieben nach</span>
     <code>@Model.ActualDestination</code>
+    @if (!string.IsNullOrWhiteSpace(Model.Job.ArchiveSha256)) { <small>SHA-256 <code>@Model.Job.ArchiveSha256</code></small> }
 </div>
 
 <div class="actual-destination panel">

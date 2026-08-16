@@ -141,7 +141,7 @@ public sealed class SecondaryConnectionWorker(
                 case SecondaryCommandKind.ApplyRestore:
                 {
                     var payload = JsonSerializer.Deserialize<SecondaryRestorePayload>(command.PayloadJson) ?? throw new InvalidOperationException("Restore-Payload fehlt.");
-                    var archive = await PullArchiveAsync(client, command, payload.Target.TaskId, payload.TotalBytes, cancellationToken);
+                    var archive = await PullArchiveAsync(client, command, payload.Target.TaskId, payload.TotalBytes, payload.Sha256, cancellationToken);
                     try
                     {
                         await archiveService.ApplyRestoreArchiveAsync(payload.Target.Kind, payload.Target.Location, archive, cancellationToken);
@@ -290,7 +290,8 @@ public sealed class SecondaryConnectionWorker(
 
     private async Task PushSourceAsync(HttpClient client, SecondaryCommandEnvelope command, string archivePath, long jobId, long total, CancellationToken cancellationToken)
     {
-        var offset = await GetOffsetAsync(client, $"/api/secondary/transfers/{command.TransferId}/source-status", cancellationToken);
+        var sha256 = await ArchiveIntegrity.ComputeSha256Async(archivePath, cancellationToken);
+        var offset = await GetOffsetAsync(client, $"/api/secondary/transfers/{command.TransferId}/source-status?sha256={sha256}", cancellationToken);
         var started = Stopwatch.StartNew();
         while (offset < total)
         {
@@ -303,6 +304,7 @@ public sealed class SecondaryConnectionWorker(
             request.Headers.Add("X-MatBu-Transfer-Final", (offset + count >= total).ToString());
             request.Headers.Add("X-MatBu-Transfer-Job-Id", jobId.ToString(System.Globalization.CultureInfo.InvariantCulture));
             request.Headers.Add("X-MatBu-Transfer-Total", total.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            request.Headers.Add("X-MatBu-Transfer-Sha256", sha256);
             request.Content = new ByteArrayContent(buffer);
             using var response = await client.SendAsync(request, cancellationToken);
             var result = await response.Content.ReadFromJsonAsync<GatewayUploadResult>(cancellationToken: cancellationToken);
@@ -395,19 +397,29 @@ public sealed class SecondaryConnectionWorker(
 
     private async Task<string> PullTargetAsync(HttpClient client, SecondaryCommandEnvelope command, SecondaryImportPayload payload, CancellationToken cancellationToken)
     {
-        var final = await PullArchiveAsync(client, command, payload.Target.TaskId, payload.TotalBytes, cancellationToken);
+        var final = await PullArchiveAsync(client, command, payload.Target.TaskId, payload.TotalBytes, payload.Sha256, cancellationToken);
         try { return await transfers.ApplyTargetArchiveAsync(final, command.TransferId, payload.Target, cancellationToken); }
         finally { try { File.Delete(final); } catch { } }
     }
 
-    private async Task<string> PullArchiveAsync(HttpClient client, SecondaryCommandEnvelope command, long taskId, long expectedTotalBytes, CancellationToken cancellationToken)
+    private async Task<string> PullArchiveAsync(HttpClient client, SecondaryCommandEnvelope command, long taskId, long expectedTotalBytes, string expectedSha256, CancellationToken cancellationToken)
     {
         var dataPath = Environment.GetEnvironmentVariable("MATBU_DATA_PATH") ?? "/data";
         var partial = Path.Combine(dataPath, "transfer-cache", $"gateway-upload-{command.TransferId}.tar.partial");
         var final = partial[..^".partial".Length];
         Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
-        if (File.Exists(final) && (expectedTotalBytes <= 0 || new FileInfo(final).Length == expectedTotalBytes)) return final;
+        if (!ArchiveIntegrity.IsSha256(expectedSha256)) throw new InvalidDataException("Der Transfer enthält keine gültige SHA-256-Prüfsumme.");
+        if (File.Exists(final) && (expectedTotalBytes <= 0 || new FileInfo(final).Length == expectedTotalBytes))
+        {
+            try
+            {
+                await ArchiveIntegrity.VerifySha256Async(final, expectedSha256, cancellationToken);
+                return final;
+            }
+            catch (InvalidDataException) { File.Delete(final); }
+        }
         var offset = File.Exists(partial) ? new FileInfo(partial).Length : 0;
+        if (expectedTotalBytes > 0 && offset > expectedTotalBytes) { File.Delete(partial); offset = 0; }
         var started = Stopwatch.StartNew();
         while (true)
         {
@@ -431,6 +443,7 @@ public sealed class SecondaryConnectionWorker(
         }
 
         File.Move(partial, final, overwrite: true);
+        await ArchiveIntegrity.VerifySha256Async(final, expectedSha256, cancellationToken);
         return final;
     }
 

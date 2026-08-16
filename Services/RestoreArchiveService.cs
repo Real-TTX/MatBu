@@ -130,7 +130,7 @@ public sealed class RestoreArchiveService(
         {
             var destination = EnsurePathWithin(job.TargetLocation, job.ResolvedDestination);
             if (!File.Exists(destination)) throw new FileNotFoundException("Das Backup-Archiv wurde am protokollierten Ziel nicht gefunden.", destination);
-            return await EnsureDecompressedAsync(job, destination, cancellationToken);
+            return await VerifyAndDecompressAsync(job, destination, cancellationToken);
         }
 
         var cachePath = RestoreCachePath(job.Id);
@@ -143,7 +143,7 @@ public sealed class RestoreArchiveService(
             if (targetKind != ObjectKind.Smb)
                 throw new InvalidOperationException($"Restore aus dem Zieltyp '{targetKind}' wird noch nicht unterstützt.");
             await DownloadSmbArchiveAsync(job.TargetLocation, job.ResolvedDestination, transferCachePath, credential, cancellationToken);
-            return await EnsureDecompressedAsync(job, transferCachePath, cancellationToken);
+            return await VerifyAndDecompressAsync(job, transferCachePath, cancellationToken);
         }
 
         if (instance is null)
@@ -166,7 +166,7 @@ public sealed class RestoreArchiveService(
             throw new FileNotFoundException("Die Secondary meldete Erfolg, aber das Restore-Archiv fehlt auf der Primary.", incoming);
         Directory.CreateDirectory(Path.GetDirectoryName(transferCachePath)!);
         File.Move(incoming, transferCachePath, overwrite: true);
-        return await EnsureDecompressedAsync(job, transferCachePath, cancellationToken);
+        return await VerifyAndDecompressAsync(job, transferCachePath, cancellationToken);
     }
 
     private async Task<string> EnsureIncrementalArchiveAvailableAsync(
@@ -293,6 +293,13 @@ public sealed class RestoreArchiveService(
     }
 
     private string RestoreCachePath(long jobId) => Path.Combine(archiveService.CacheDirectory, "restore", $"job-{jobId}.tar");
+
+    private async Task<string> VerifyAndDecompressAsync(TransferJob job, string archivePath, CancellationToken cancellationToken)
+    {
+        if (ArchiveIntegrity.IsSha256(job.ArchiveSha256))
+            await ArchiveIntegrity.VerifySha256Async(archivePath, job.ArchiveSha256, cancellationToken);
+        return await EnsureDecompressedAsync(job, archivePath, cancellationToken);
+    }
 
     private async Task<string> EnsureDecompressedAsync(TransferJob job, string archivePath, CancellationToken cancellationToken)
     {

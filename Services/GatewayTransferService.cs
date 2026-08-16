@@ -6,9 +6,9 @@ using MatBu.Models;
 namespace MatBu.Services;
 
 public sealed record GatewaySourceRequest(string TransferId, ObjectKind Kind, string Location, string? SmbUsername, string? SmbPassword, long Offset = 0, BackupCompression Compression = BackupCompression.None, IReadOnlyList<string>? IncludedPaths = null);
-public sealed record GatewayTargetRequest(long TaskId, ObjectKind Kind, string Location, string? SmbUsername, string? SmbPassword, BackupCompression Compression = BackupCompression.None);
+public sealed record GatewayTargetRequest(long TaskId, ObjectKind Kind, string Location, string? SmbUsername, string? SmbPassword, BackupCompression Compression = BackupCompression.None, string Sha256 = "");
 public sealed record GatewayUploadResult(bool Success, long Offset, bool Completed, string Message);
-public sealed record GatewayArchiveMetrics(long SourceBytes, long StoredBytes);
+public sealed record GatewayArchiveMetrics(long SourceBytes, long StoredBytes, string Sha256 = "");
 
 public sealed class GatewayTransferService(
     ArchiveService archiveService,
@@ -43,7 +43,8 @@ public sealed class GatewayTransferService(
                     lease = await dockerConsistency.BeginAsync(consistency, cancellationToken);
                 var result = await archiveService.CreateCompressedAsync(source, credential, buildingPath, request.Compression, null, cancellationToken, request.IncludedPaths);
                 File.Move(buildingPath, archivePath, overwrite: true);
-                await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes)), cancellationToken);
+                var sha256 = await ArchiveIntegrity.ComputeSha256Async(archivePath, cancellationToken);
+                await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes, sha256)), cancellationToken);
                 return archivePath;
             }
             finally
@@ -67,12 +68,24 @@ public sealed class GatewayTransferService(
         return new RangeReadStream(file, offset, file.Length - offset);
     }
 
-    public long GetSourceOffset(string transferId)
+    public async Task<long> GetSourceOffsetAsync(string transferId, string expectedSha256, CancellationToken cancellationToken)
     {
         EnsureTransferId(transferId);
         var partial = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar.partial");
         var final = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar");
-        return File.Exists(partial) ? new FileInfo(partial).Length : File.Exists(final) ? new FileInfo(final).Length : 0;
+        if (File.Exists(partial)) return new FileInfo(partial).Length;
+        if (!File.Exists(final)) return 0;
+        if (!ArchiveIntegrity.IsSha256(expectedSha256)) return new FileInfo(final).Length;
+        try
+        {
+            await ArchiveIntegrity.VerifySha256Async(final, expectedSha256, cancellationToken);
+            return new FileInfo(final).Length;
+        }
+        catch (InvalidDataException)
+        {
+            File.Delete(final);
+            return 0;
+        }
     }
 
     public GatewayArchiveMetrics GetSourceMetrics(string transferId)
@@ -89,7 +102,7 @@ public sealed class GatewayTransferService(
         return new GatewayArchiveMetrics(0, File.Exists(archivePath) ? new FileInfo(archivePath).Length : 0);
     }
 
-    public async Task<GatewayUploadResult> ReceiveSourceChunkAsync(string transferId, long offset, bool final, long jobId, long totalBytes, Stream body, CancellationToken cancellationToken)
+    public async Task<GatewayUploadResult> ReceiveSourceChunkAsync(string transferId, long offset, bool final, long jobId, long totalBytes, string expectedSha256, Stream body, CancellationToken cancellationToken)
     {
         EnsureTransferId(transferId);
         var gate = _transferLocks.GetOrAdd($"source-{transferId}", _ => new SemaphoreSlim(1, 1));
@@ -111,8 +124,30 @@ public sealed class GatewayTransferService(
                 });
             }
             if (!final) return new GatewayUploadResult(true, current, false, "Source-Chunk gespeichert.");
+            if (current != totalBytes || !ArchiveIntegrity.IsSha256(expectedSha256))
+            {
+                File.Delete(partial);
+                return new GatewayUploadResult(false, 0, false, "Source-Transfer verworfen: Größe oder SHA-256-Prüfsumme fehlt.");
+            }
+            try
+            {
+                await ArchiveIntegrity.VerifySha256Async(partial, expectedSha256, cancellationToken);
+            }
+            catch (InvalidDataException ex)
+            {
+                File.Delete(partial);
+                return new GatewayUploadResult(false, 0, false, ex.Message);
+            }
             var archive = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar");
             File.Move(partial, archive, overwrite: true);
+            if (jobId > 0)
+            {
+                store.Update(data =>
+                {
+                    var job = data.TransferJobs.FirstOrDefault(x => x.Id == jobId);
+                    if (job is not null) { job.ArchiveSha256 = expectedSha256.ToLowerInvariant(); job.UpdateDate = DateTimeOffset.UtcNow; }
+                });
+            }
             return new GatewayUploadResult(true, current, true, "Source-Transfer abgeschlossen.");
         }
         finally { gate.Release(); }
@@ -154,6 +189,21 @@ public sealed class GatewayTransferService(
             currentOffset = new FileInfo(partialPath).Length;
             if (!final) return new GatewayUploadResult(true, currentOffset, false, "Chunk gespeichert.");
 
+            if (!ArchiveIntegrity.IsSha256(target.Sha256))
+            {
+                File.Delete(partialPath);
+                return new GatewayUploadResult(false, 0, false, "Upload verworfen: SHA-256-Prüfsumme fehlt.");
+            }
+            try
+            {
+                await ArchiveIntegrity.VerifySha256Async(partialPath, target.Sha256, cancellationToken);
+            }
+            catch (InvalidDataException ex)
+            {
+                File.Delete(partialPath);
+                return new GatewayUploadResult(false, 0, false, ex.Message);
+            }
+
             var archivePath = UploadFinalPath(transferId);
             File.Move(partialPath, archivePath, overwrite: true);
             try
@@ -178,7 +228,7 @@ public sealed class GatewayTransferService(
         {
             Directory.CreateDirectory(target.Location);
             var destination = Path.Combine(target.Location, fileName);
-            await CopyFileResumableAsync(archivePath, destination, cancellationToken);
+            await CopyFileResumableAsync(archivePath, destination, target.Sha256, cancellationToken);
             return destination;
         }
 
@@ -202,10 +252,18 @@ public sealed class GatewayTransferService(
         if (!Guid.TryParse(transferId, out _)) throw new ArgumentException("Ungültige Transfer-ID.", nameof(transferId));
     }
 
-    private static async Task CopyFileResumableAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken)
+    private static async Task CopyFileResumableAsync(string sourcePath, string destinationPath, string expectedSha256, CancellationToken cancellationToken)
     {
         var sourceLength = new FileInfo(sourcePath).Length;
-        if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length == sourceLength) return;
+        if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length == sourceLength)
+        {
+            try
+            {
+                await ArchiveIntegrity.VerifySha256Async(destinationPath, expectedSha256, cancellationToken);
+                return;
+            }
+            catch (InvalidDataException) { File.Delete(destinationPath); }
+        }
         var partialPath = destinationPath + ".partial";
         var offset = File.Exists(partialPath) ? new FileInfo(partialPath).Length : 0;
         if (offset > sourceLength)
@@ -214,12 +272,15 @@ public sealed class GatewayTransferService(
             offset = 0;
         }
 
-        await using var input = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using var output = new FileStream(partialPath, offset > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        input.Position = offset;
-        await input.CopyToAsync(output, 4 * 1024 * 1024, cancellationToken);
-        await output.FlushAsync(cancellationToken);
+        await using (var input = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        await using (var output = new FileStream(partialPath, offset > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            input.Position = offset;
+            await input.CopyToAsync(output, 4 * 1024 * 1024, cancellationToken);
+            await output.FlushAsync(cancellationToken);
+        }
         File.Move(partialPath, destinationPath, overwrite: true);
+        await ArchiveIntegrity.VerifySha256Async(destinationPath, expectedSha256, cancellationToken);
     }
 
     private sealed class RangeReadStream(Stream inner, long start, long length) : Stream

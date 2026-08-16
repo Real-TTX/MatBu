@@ -5,7 +5,7 @@ using MatBu.Models;
 namespace MatBu.Services;
 
 public sealed record SecondaryExportPayload(GatewaySourceRequest Source, long JobId, BackupConsistencySettings Consistency);
-public sealed record SecondaryImportPayload(GatewayTargetRequest Target, long JobId, long TotalBytes);
+public sealed record SecondaryImportPayload(GatewayTargetRequest Target, long JobId, long TotalBytes, string Sha256);
 
 public sealed class BackupTaskExecutor(
     PersistentStore store,
@@ -84,6 +84,9 @@ public sealed class BackupTaskExecutor(
             }
 
             var totalBytes = await EnsureSourceArchiveAsync(task, source, sourceInstance, job, cachePath, partialPath, cancellationToken);
+            var archiveSha256 = await ArchiveIntegrity.ComputeSha256Async(cachePath, cancellationToken);
+            MarkArchiveIntegrity(job.Id, archiveSha256);
+            AppendStep(job.Id, "Integrität", "Completed", $"Quellarchiv mit SHA-256 {archiveSha256} verifiziert.", "Primary", cachePath, totalBytes, totalBytes);
             MarkJob(job.Id, "Running", 0, totalBytes, cachePath, speed: 0);
 
             AppendStep(
@@ -99,11 +102,11 @@ public sealed class BackupTaskExecutor(
             string destination;
             if (targetInstance.Role == InstanceRole.Secondary)
             {
-                destination = await UploadToSecondaryAsync(task, target, targetInstance, job, cachePath, totalBytes, cancellationToken);
+                destination = await UploadToSecondaryAsync(task, target, targetInstance, job, cachePath, totalBytes, archiveSha256, cancellationToken);
             }
             else
             {
-                destination = await StoreOnPrimaryAsync(task, target, job, cachePath, totalBytes, cancellationToken);
+                destination = await StoreOnPrimaryAsync(task, target, job, cachePath, totalBytes, archiveSha256, cancellationToken);
             }
 
             AppendStep(
@@ -572,13 +575,14 @@ public sealed class BackupTaskExecutor(
         TransferJob job,
         string archivePath,
         long totalBytes,
+        string archiveSha256,
         CancellationToken cancellationToken)
     {
         if (target.Kind == ObjectKind.LocalFolder)
         {
             Directory.CreateDirectory(target.Location);
             var destination = Path.Combine(target.Location, $"task-{task.Id}-{job.Id}{ArchiveExtension(task.Compression)}");
-            await CopyFileResumableAsync(archivePath, destination, job.Id, totalBytes, cancellationToken);
+            await CopyFileResumableAsync(archivePath, destination, job.Id, totalBytes, archiveSha256, cancellationToken);
             return destination;
         }
 
@@ -601,12 +605,13 @@ public sealed class BackupTaskExecutor(
         TransferJob job,
         string archivePath,
         long totalBytes,
+        string archiveSha256,
         CancellationToken cancellationToken)
     {
         var transferId = EnsureTransferId(job);
         var credential = target.Kind == ObjectKind.Smb ? store.GetSmbCredential(target.Id) : null;
-        var targetRequest = new GatewayTargetRequest(task.Id, target.Kind, target.Location, credential?.Username, credential?.Password, task.Compression);
-        var commandId = commands.Queue(instance.Id, SecondaryCommandKind.ImportTarget, transferId, new SecondaryImportPayload(targetRequest, job.Id, totalBytes));
+        var targetRequest = new GatewayTargetRequest(task.Id, target.Kind, target.Location, credential?.Username, credential?.Password, task.Compression, archiveSha256);
+        var commandId = commands.Queue(instance.Id, SecondaryCommandKind.ImportTarget, transferId, new SecondaryImportPayload(targetRequest, job.Id, totalBytes, archiveSha256));
         AppendStep(
             job.Id,
             "Gateway",
@@ -863,6 +868,17 @@ public sealed class BackupTaskExecutor(
         });
     }
 
+    private void MarkArchiveIntegrity(long jobId, string sha256)
+    {
+        store.Update(data =>
+        {
+            var job = data.TransferJobs.FirstOrDefault(current => current.Id == jobId);
+            if (job is null) return;
+            job.ArchiveSha256 = sha256.ToLowerInvariant();
+            job.UpdateDate = DateTimeOffset.UtcNow;
+        });
+    }
+
     private static string ArchiveExtension(BackupCompression compression) => compression == BackupCompression.None ? ".tar" : ".tar.br";
 
     private void AppendStep(
@@ -921,10 +937,19 @@ public sealed class BackupTaskExecutor(
         string destinationPath,
         long jobId,
         long totalBytes,
+        string expectedSha256,
         CancellationToken cancellationToken)
     {
         var partialPath = destinationPath + ".partial";
-        if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length == totalBytes) return;
+        if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length == totalBytes)
+        {
+            try
+            {
+                await ArchiveIntegrity.VerifySha256Async(destinationPath, expectedSha256, cancellationToken);
+                return;
+            }
+            catch (InvalidDataException) { File.Delete(destinationPath); }
+        }
         var offset = File.Exists(partialPath) ? new FileInfo(partialPath).Length : 0;
         if (offset > totalBytes)
         {
@@ -933,20 +958,23 @@ public sealed class BackupTaskExecutor(
         }
 
         var started = System.Diagnostics.Stopwatch.StartNew();
-        await using var input = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using var output = new FileStream(partialPath, offset > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        input.Position = offset;
-        var buffer = new byte[4 * 1024 * 1024];
-        int read;
-        while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+        await using (var input = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        await using (var output = new FileStream(partialPath, offset > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
         {
-            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-            offset += read;
-            var speed = (long)(offset / Math.Max(.001, started.Elapsed.TotalSeconds));
-            MarkJob(jobId, "Running", offset, totalBytes, partialPath, speed: speed);
+            input.Position = offset;
+            var buffer = new byte[4 * 1024 * 1024];
+            int read;
+            while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+            {
+                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                offset += read;
+                var speed = (long)(offset / Math.Max(.001, started.Elapsed.TotalSeconds));
+                MarkJob(jobId, "Running", offset, totalBytes, partialPath, speed: speed);
+            }
+            await output.FlushAsync(cancellationToken);
         }
-        await output.FlushAsync(cancellationToken);
         File.Move(partialPath, destinationPath, overwrite: true);
+        await ArchiveIntegrity.VerifySha256Async(destinationPath, expectedSha256, cancellationToken);
     }
 
     private static void TryDelete(string path)

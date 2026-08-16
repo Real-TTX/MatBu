@@ -170,9 +170,21 @@ try {
     Write-Host "[E2E] Backup Secondary -> Primary ausführen"
     $gatewayTask = New-BackupTask "E2E Secondary nach Primary" $secondarySource.id $primaryTarget.id
     Start-Task $gatewayTask.id
-    $completed = Wait-Job $gatewayTask.id @("Completed") 90
+    $completed = Wait-Job $gatewayTask.id @("Completed") 180
     Assert-True ($completed.bytesTransferred -gt 0) "Gateway-Backup meldet keine übertragenen Bytes."
+    Assert-True ($completed.archiveSha256 -match '^[0-9a-f]{64}$') "Gateway-Backup hat keine gültige SHA-256-Prüfsumme gespeichert."
     Invoke-Compose "exec" "-T" "primary" "sh" "-c" "tar -tf /data/e2e/gateway-target/task-$($gatewayTask.id)-$($completed.id).tar | grep -q payload.bin"
+
+    Write-Host "[E2E] Backup Primary -> Secondary mit Integritätsprüfung ausführen"
+    Invoke-Compose "exec" "-T" "primary" "sh" "-c" "dd if=/dev/urandom of=/data/e2e/local-source/primary-payload.bin bs=1M count=16 status=none"
+    Invoke-Compose "exec" "-T" "secondary" "sh" "-c" "mkdir -p /data/e2e/secondary-target"
+    $primarySourceForSecondary = New-ObjectEntry "E2E Primary Source" "Source" "/data/e2e/local-source" 1
+    $secondaryTarget = New-ObjectEntry "E2E Secondary Target" "Target" "/data/e2e/secondary-target" 2
+    $reverseGatewayTask = New-BackupTask "E2E Primary nach Secondary" $primarySourceForSecondary.id $secondaryTarget.id
+    Start-Task $reverseGatewayTask.id
+    $reverseCompleted = Wait-Job $reverseGatewayTask.id @("Completed") 180
+    Assert-True ($reverseCompleted.archiveSha256 -match '^[0-9a-f]{64}$') "Primary-zu-Secondary-Backup hat keine gültige SHA-256-Prüfsumme gespeichert."
+    Invoke-Compose "exec" "-T" "secondary" "sh" "-c" "tar -tf /data/e2e/secondary-target/task-$($reverseGatewayTask.id)-$($reverseCompleted.transferId).tar | grep -q primary-payload.bin"
 
     Write-Host "[E2E] Secondary-Ausfall muss zeitlich begrenzt fehlschlagen und danach fortsetzen"
     Invoke-Compose "stop" "secondary"

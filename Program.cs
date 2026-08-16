@@ -176,7 +176,8 @@ app.MapPut("/api/gateway/transfer/{transferId}/upload", async (string transferId
         string.IsNullOrWhiteSpace(context.Request.Headers["X-MatBu-Target-Location"].FirstOrDefault()) ||
         !long.TryParse(context.Request.Headers["X-MatBu-Transfer-Offset"], out var offset))
         return Results.BadRequest(new { message = "Transfer-Metadaten fehlen." });
-    var target = new GatewayTargetRequest(taskId, kind, context.Request.Headers["X-MatBu-Target-Location"].First()!, context.Request.Headers["X-MatBu-Target-Smb-Username"].FirstOrDefault(), context.Request.Headers["X-MatBu-Target-Smb-Password"].FirstOrDefault());
+    _ = Enum.TryParse<BackupCompression>(context.Request.Headers["X-MatBu-Target-Compression"], true, out var compression);
+    var target = new GatewayTargetRequest(taskId, kind, context.Request.Headers["X-MatBu-Target-Location"].First()!, context.Request.Headers["X-MatBu-Target-Smb-Username"].FirstOrDefault(), context.Request.Headers["X-MatBu-Target-Smb-Password"].FirstOrDefault(), compression, context.Request.Headers["X-MatBu-Transfer-Sha256"].FirstOrDefault() ?? "");
     var final = bool.TryParse(context.Request.Headers["X-MatBu-Transfer-Final"], out var isFinal) && isFinal;
     var result = await transfers.ReceiveUploadAsync(transferId, target, offset, final, context.Request.Body, cancellationToken);
     return Results.Ok(result);
@@ -196,12 +197,13 @@ app.MapPost("/api/secondary/commands/{commandId:long}/progress", (long commandId
     var changed = commands.UpdateProgress(context.Request.Headers["X-MatBu-Instance-Token"].FirstOrDefault() ?? "", commandId, progress);
     return changed ? Results.Ok() : Results.NotFound();
 });
-app.MapGet("/api/secondary/transfers/{transferId}/source-status", (string transferId, GatewayTransferService transfers) => Results.Ok(new { offset = transfers.GetSourceOffset(transferId) }));
+app.MapGet("/api/secondary/transfers/{transferId}/source-status", async (string transferId, string? sha256, GatewayTransferService transfers, CancellationToken cancellationToken) => Results.Ok(new { offset = await transfers.GetSourceOffsetAsync(transferId, sha256 ?? "", cancellationToken) }));
 app.MapPut("/api/secondary/transfers/{transferId}/source", async (string transferId, HttpContext context, GatewayTransferService transfers, CancellationToken cancellationToken) =>
 {
     if (!long.TryParse(context.Request.Headers["X-MatBu-Transfer-Offset"], out var offset) || !long.TryParse(context.Request.Headers["X-MatBu-Transfer-Job-Id"], out var jobId) || !long.TryParse(context.Request.Headers["X-MatBu-Transfer-Total"], out var total)) return Results.BadRequest(new { message = "Transfer-Metadaten fehlen." });
     var final = bool.TryParse(context.Request.Headers["X-MatBu-Transfer-Final"], out var isFinal) && isFinal;
-    return Results.Ok(await transfers.ReceiveSourceChunkAsync(transferId, offset, final, jobId, total, context.Request.Body, cancellationToken));
+    var sha256 = context.Request.Headers["X-MatBu-Transfer-Sha256"].FirstOrDefault() ?? "";
+    return Results.Ok(await transfers.ReceiveSourceChunkAsync(transferId, offset, final, jobId, total, sha256, context.Request.Body, cancellationToken));
 });
 app.MapPost("/api/secondary/transfers/{transferId}/incremental-manifest", async (
     string transferId,
