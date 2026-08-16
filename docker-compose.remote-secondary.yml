@@ -6,7 +6,6 @@ services:
     pull_policy: always
     restart: unless-stopped
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
       MATBU_DATA_PATH: /data
       MATBU_INSTANCE_ROLE: Secondary
       MATBU_PRIMARY_ENDPOINT: "https://backup.example.de"
