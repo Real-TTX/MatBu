@@ -22,6 +22,26 @@ docker compose --env-file .env.production -f docker-compose.release.yml up -d
 
 Der Release-Stack bindet Port 9293 standardmäßig nur an `127.0.0.1`. Für Zugriffe aus anderen Netzen gehört davor ein HTTPS-Reverse-Proxy; die Secondary baut ihre Verbindung ausgehend zu dessen öffentlicher HTTPS-Adresse auf. `MATBU_TRUST_FORWARD_HEADERS=true` darf nur in diesem abgeschirmten Proxy-Aufbau verwendet werden. Wer MatBu bewusst direkt im LAN veröffentlicht, setzt `MATBU_BIND_ADDRESS=0.0.0.0` und `MATBU_TRUST_FORWARD_HEADERS=false`, hat dann aber ohne zusätzlichen TLS-Terminator keine verschlüsselte Webverbindung.
 
+## Secondary in einem entfernten Netzwerk testen
+
+Auf der Primary zuerst unter **Instanzen** eine Secondary anlegen und deren Instance-Token kopieren. Im Projektordner des entfernten Docker-Hosts anschließend nur die Beispielkonfiguration kopieren und die zwei Werte eintragen:
+
+```bash
+cp .env.remote-secondary.example .env.remote-secondary
+```
+
+Danach startet ein einziger Befehl die Secondary:
+
+```bash
+docker compose -f docker-compose.remote-secondary.yml up -d --build
+```
+
+Die Secondary veröffentlicht keinen Port und benötigt keine eingehende Firewall-Regel. Sie verbindet sich ausschließlich ausgehend zu `MATBU_PRIMARY_ENDPOINT`; bei HTTPS normalerweise über TCP 443. Das Docker-Socket-Mount ist nur nötig, wenn Docker-Volumes dieses entfernten Hosts gesichert werden sollen. Den Verbindungsstatus sieht man auf der Primary unter **Instanzen** oder auf dem Remote-Host mit:
+
+```bash
+docker compose -f docker-compose.remote-secondary.yml logs -f secondary
+```
+
 Die Healthchecks prüfen `/health`. SQLite, Sitzungen, verschlüsselte Zugangsdaten und Data-Protection-Schlüssel liegen gemeinsam im lokalen Volume `matbu-data`. Dieses Volume muss selbst regelmäßig gesichert werden und darf nicht auf einem NFS-/SMB-Dateisystem betrieben werden. Vor einer Wiederherstellung des MatBu-Systemvolumes müssen Primary und Worker gestoppt sein.
 
 Der Docker-Socket gewährt dem Container praktisch administrative Kontrolle über den Docker-Host; `:ro` begrenzt die Docker-API nicht. Der Mount ist für Docker-Volume-Backups und Container-Konsistenzsteuerung vorgesehen. MatBu deshalb nur auf einem dedizierten, vertrauenswürdigen Backup-Host betreiben und den Socket nicht an fremde Container weitergeben.
