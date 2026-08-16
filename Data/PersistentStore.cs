@@ -134,7 +134,7 @@ public sealed class PersistentStore
         db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS IX_TransferChunk_TransferId_Sequence ON TransferChunk (TransferId, Sequence)");
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_TransferChunk_TransferId_State ON TransferChunk (TransferId, State)");
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_TransferChunk_Hash ON TransferChunk (Hash)");
-        if (!db.Users.Any()) ImportOrSeed(db, environment);
+        if (!db.Users.Any()) ImportOrSeed(db);
         if (!db.Instances.Any())
         {
             var now = DateTimeOffset.UtcNow;
@@ -452,7 +452,7 @@ public sealed class PersistentStore
         return CryptographicOperations.FixedTimeEquals(actual, expected);
     }
 
-    private void ImportOrSeed(MatBuDbContext db, IHostEnvironment environment)
+    private void ImportOrSeed(MatBuDbContext db)
     {
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         jsonOptions.Converters.Add(new JsonStringEnumConverter());
@@ -460,11 +460,11 @@ public sealed class PersistentStore
             ? JsonSerializer.Deserialize<AppData>(File.ReadAllText(_legacyPath), jsonOptions)
             : null;
         if (data is null)
-            data = Seed(ResolveInitialAdminPassword(environment));
+            data = Seed();
         else if (data.Users.Count == 0)
-            data.Users.Add(Seed(ResolveInitialAdminPassword(environment)).Users[0]);
+            data.Users.Add(Seed().Users[0]);
         else if (data.Users[0].PasswordHash == "local")
-            data.Users[0].PasswordHash = HashPassword(ResolveInitialAdminPassword(environment));
+            data.Users[0].PasswordHash = HashPassword("admin");
         if (data.Instances.Count == 0) data.Instances.Add(new MatBuInstance { Id = 1, Name = "Primary", Role = InstanceRole.Primary, Status = InstanceStatus.Online, CreateDate = DateTimeOffset.UtcNow, UpdateDate = DateTimeOffset.UtcNow });
         db.Instances.AddRange(data.Instances);
         db.Objects.AddRange(data.Objects);
@@ -485,22 +485,13 @@ public sealed class PersistentStore
         db.SaveChanges();
     }
 
-    private static string ResolveInitialAdminPassword(IHostEnvironment environment)
-    {
-        var password = Environment.GetEnvironmentVariable("MATBU_INITIAL_ADMIN_PASSWORD");
-        if (!string.IsNullOrWhiteSpace(password) && password.Length >= 12) return password;
-        if (environment.IsProduction())
-            throw new InvalidOperationException("Für den ersten Produktionsstart muss MATBU_INITIAL_ADMIN_PASSWORD mit mindestens 12 Zeichen gesetzt sein.");
-        return "admin";
-    }
-
-    private static AppData Seed(string initialAdminPassword)
+    private static AppData Seed()
     {
         var now = DateTimeOffset.UtcNow;
         return new AppData
         {
             Instances = [new MatBuInstance { Id = 1, Name = "Primary", Role = InstanceRole.Primary, Status = InstanceStatus.Online, CreateDate = now, UpdateDate = now }],
-            Users = [new AppUser { Id = 1, UserName = "admin", PasswordHash = HashPassword(initialAdminPassword), Role = UserRole.Admin, CreateDate = now, UpdateDate = now }]
+            Users = [new AppUser { Id = 1, UserName = "admin", PasswordHash = HashPassword("admin"), Role = UserRole.Admin, CreateDate = now, UpdateDate = now }]
         };
     }
 }

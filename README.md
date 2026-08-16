@@ -11,7 +11,7 @@ docker compose up -d
 
 Die Oberfläche ist danach unter `http://localhost:9293` erreichbar. Die Daten liegen im Docker-Volume `matbu_matbu-data`.
 
-Für einen produktionsnahen Release-Stack zuerst `.env.production.example` nach `.env.production` kopieren und ein langes, zufälliges initiales Admin-Passwort setzen. Dieses Passwort wird nur beim Anlegen einer neuen Datenbank verwendet.
+Für einen produktionsnahen Release-Stack zuerst `.env.production.example` nach `.env.production` kopieren und die Netzwerk- und Proxy-Einstellungen prüfen.
 
 ```powershell
 docker build -t matbu:latest .
@@ -113,7 +113,7 @@ Full-Jobs können optional Docker-Container nur während der lokalen Quellaufnah
 
 ## Zugang und Produktionshinweise
 
-Im Development-Stack lautet der initiale lokale Zugang weiterhin `admin` / `admin`. Eine neue Produktionsdatenbank startet dagegen nur, wenn `MATBU_INITIAL_ADMIN_PASSWORD` mindestens 12 Zeichen lang ist. Anmeldeversuche sind auf fünf Versuche pro Minute und Quell-IP begrenzt. Sessions bleiben über Container-Neustarts erhalten, weil Datenbank und Data-Protection-Schlüssel im persistenten Volume liegen.
+Bei einer neuen Development- oder Produktionsdatenbank lautet der initiale lokale Zugang `admin` / `admin`. Das Passwort kann später in der Benutzerverwaltung geändert werden. Anmeldeversuche sind auf fünf Versuche pro Minute und Quell-IP begrenzt. Sessions bleiben über Container-Neustarts erhalten, weil Datenbank und Data-Protection-Schlüssel im persistenten Volume liegen.
 
 Vor der Freigabe müssen mindestens ein erfolgreicher Backup- und Restore-Lauf pro tatsächlich eingesetztem Object-Typ durchgeführt werden. Für Proxmox VE und PBS benötigt dieser Test echte Testendpunkte und API-Token; reine Unit-Tests ersetzen diesen Infrastrukturtest nicht.
 

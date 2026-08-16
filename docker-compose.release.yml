@@ -7,7 +7,6 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       MATBU_DATA_PATH: /data
-      MATBU_INITIAL_ADMIN_PASSWORD: "${MATBU_INITIAL_ADMIN_PASSWORD:-}"
       MATBU_TRUST_FORWARD_HEADERS: "${MATBU_TRUST_FORWARD_HEADERS:-true}"
     volumes:
       - matbu-data:/data
@@ -26,7 +25,6 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       MATBU_DATA_PATH: /data
       MATBU_DOCKER_WORKER: "true"
-      MATBU_INITIAL_ADMIN_PASSWORD: "${MATBU_INITIAL_ADMIN_PASSWORD:-}"
     volumes:
       - matbu-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
