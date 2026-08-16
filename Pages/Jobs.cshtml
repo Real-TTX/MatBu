@@ -44,7 +44,7 @@
                 <td data-job-state>
                     <div class="cell-stack">
                         <div class="cell-status"><span class="status @StatusClass(item.State)">@item.State</span><strong data-job-progress data-job-progress-mode="compact">@progress%</strong></div>
-                        <div class="compact-progress"><div class="job-progress"><div data-job-bar style="width:@progress%"></div></div><small class="compact-live-meta"><span data-job-speed>@FormatSpeed(item.SpeedBytesPerSecond)</span><span data-job-remaining>@FormatRemaining(item.BytesTransferred, item.TotalBytes, item.SpeedBytesPerSecond)</span></small></div>
+                        <div class="compact-progress"><div class="job-progress"><div data-job-bar style="width:@progress%"></div></div><small class="compact-live-meta"><span data-job-speed>@FormatSpeed(item.SpeedBytesPerSecond)</span><span data-job-remaining>@FormatRemaining(item.State, item.BytesTransferred, item.TotalBytes, item.SpeedBytesPerSecond)</span></small></div>
                     </div>
                 </td>
                 <td>
@@ -85,8 +85,10 @@
     string FormatSpeed(long value) => value <= 0 ? "—" : value >= 1024 * 1024 ? $"{value / 1024d / 1024d:0.0} MB/s" : $"{value / 1024d:0.0} KB/s";
     string CompressionName(BackupCompression value) => value switch { BackupCompression.Fast => "Brotli schnell", BackupCompression.Balanced => "Brotli ausgewogen", BackupCompression.Maximum => "Brotli maximal", _ => "Unkomprimiert" };
     string CompressionRate(TransferJob job) => job.SourceBytes <= 0 ? "—" : $"{job.StoredBytes * 100d / job.SourceBytes:0.0}%";
-    string FormatRemaining(long bytes, long total, long speed)
+    string FormatRemaining(string state, long bytes, long total, long speed)
     {
+        if (state is "Fehler" or "Failed") return "Abgebrochen";
+        if (state is "Completed") return "Fertig";
         if (total <= 0 || bytes >= total || speed <= 0) return total > 0 && bytes >= total ? "Fertig" : "—";
         var seconds = (long)Math.Ceiling((double)(total - bytes) / speed);
         var days = seconds / 86400; seconds %= 86400;

@@ -3,13 +3,21 @@ services:
     image: matbu:latest
     restart: unless-stopped
     ports:
-      - "9293:9293"
+      - "${MATBU_BIND_ADDRESS:-127.0.0.1}:9293:9293"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       MATBU_DATA_PATH: /data
+      MATBU_INITIAL_ADMIN_PASSWORD: "${MATBU_INITIAL_ADMIN_PASSWORD:-}"
+      MATBU_TRUST_FORWARD_HEADERS: "${MATBU_TRUST_FORWARD_HEADERS:-true}"
     volumes:
       - matbu-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:9293/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   matbu-worker:
     image: matbu:latest
@@ -18,9 +26,16 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       MATBU_DATA_PATH: /data
       MATBU_DOCKER_WORKER: "true"
+      MATBU_INITIAL_ADMIN_PASSWORD: "${MATBU_INITIAL_ADMIN_PASSWORD:-}"
     volumes:
       - matbu-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:9293/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   matbu-data:

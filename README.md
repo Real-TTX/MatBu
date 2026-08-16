@@ -11,12 +11,18 @@ docker compose up -d
 
 Die Oberfläche ist danach unter `http://localhost:9293` erreichbar. Die Daten liegen im Docker-Volume `matbu_matbu-data`.
 
-Für einen Release-Stack:
+Für einen produktionsnahen Release-Stack zuerst `.env.production.example` nach `.env.production` kopieren und ein langes, zufälliges initiales Admin-Passwort setzen. Dieses Passwort wird nur beim Anlegen einer neuen Datenbank verwendet.
 
 ```powershell
 docker build -t matbu:latest .
-docker compose -f docker-compose.release.yml up -d
+docker compose --env-file .env.production -f docker-compose.release.yml up -d
 ```
+
+Der Release-Stack bindet Port 9293 standardmäßig nur an `127.0.0.1`. Für Zugriffe aus anderen Netzen gehört davor ein HTTPS-Reverse-Proxy; die Secondary baut ihre Verbindung ausgehend zu dessen öffentlicher HTTPS-Adresse auf. `MATBU_TRUST_FORWARD_HEADERS=true` darf nur in diesem abgeschirmten Proxy-Aufbau verwendet werden. Wer MatBu bewusst direkt im LAN veröffentlicht, setzt `MATBU_BIND_ADDRESS=0.0.0.0` und `MATBU_TRUST_FORWARD_HEADERS=false`, hat dann aber ohne zusätzlichen TLS-Terminator keine verschlüsselte Webverbindung.
+
+Die Healthchecks prüfen `/health`. SQLite, Sitzungen, verschlüsselte Zugangsdaten und Data-Protection-Schlüssel liegen gemeinsam im lokalen Volume `matbu-data`. Dieses Volume muss selbst regelmäßig gesichert werden und darf nicht auf einem NFS-/SMB-Dateisystem betrieben werden. Vor einer Wiederherstellung des MatBu-Systemvolumes müssen Primary und Worker gestoppt sein.
+
+Der Docker-Socket gewährt dem Container praktisch administrative Kontrolle über den Docker-Host; `:ro` begrenzt die Docker-API nicht. Der Mount ist für Docker-Volume-Backups und Container-Konsistenzsteuerung vorgesehen. MatBu deshalb nur auf einem dedizierten, vertrauenswürdigen Backup-Host betreiben und den Socket nicht an fremde Container weitergeben.
 
 ## Aktueller Stand
 
@@ -105,13 +111,12 @@ Unter **Benutzer → Benachrichtigungen** oder über das Glocken-Symbol können 
 
 Full-Jobs können optional Docker-Container nur während der lokalen Quellaufnahme pausieren oder Pre-/Post-Kommandos über `/bin/sh -c` innerhalb eines Containers ausführen. Bei einer Quelle auf einer Secondary wird die Konsistenzsteuerung dort lokal ausgeführt; die Anwendung ist vor der anschließenden Übertragung bereits wieder freigegeben. Jeder Schritt erscheint im Jobprotokoll. Aktive Leases werden verschlüsselt im jeweiligen Datenvolume gespeichert und nach einem Worker- oder Secondary-Neustart automatisch bereinigt, damit pausierte Anwendungen und Post-Hooks wieder freigegeben werden. Die Konfiguration ist Administratoren vorbehalten; Kommandotexte werden nicht in die Jobhistorie kopiert.
 
-## Nächste technische Bausteine
+## Zugang und Produktionshinweise
 
-1. per-Object-Credential-Verwaltung statt globaler SMB-Umgebungsvariablen
-2. resumable Transfer-Jobs mit Checkpoints, Retry und Offline-Wiederaufnahme
-3. Master-/Slave-Handshake über HTTPS und Monitoring-/Notification-API
+Im Development-Stack lautet der initiale lokale Zugang weiterhin `admin` / `admin`. Eine neue Produktionsdatenbank startet dagegen nur, wenn `MATBU_INITIAL_ADMIN_PASSWORD` mindestens 12 Zeichen lang ist. Anmeldeversuche sind auf fünf Versuche pro Minute und Quell-IP begrenzt. Sessions bleiben über Container-Neustarts erhalten, weil Datenbank und Data-Protection-Schlüssel im persistenten Volume liegen.
 
-Der initiale lokale Zugang lautet `admin` / `admin` und sollte vor produktivem Einsatz geändert werden.
+Vor der Freigabe müssen mindestens ein erfolgreicher Backup- und Restore-Lauf pro tatsächlich eingesetztem Object-Typ durchgeführt werden. Für Proxmox VE und PBS benötigt dieser Test echte Testendpunkte und API-Token; reine Unit-Tests ersetzen diesen Infrastrukturtest nicht.
+
 ## Tests
 
 Die schnellen Kernlogik-Tests laufen mit:

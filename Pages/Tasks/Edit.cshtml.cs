@@ -69,6 +69,11 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
         Objects = data.Objects;
         JobLabels = data.JobLabels.OrderBy(label => label.Name, StringComparer.OrdinalIgnoreCase).ToList();
         SelectedLabelIds = SelectedLabelIds.Distinct().ToList();
+        // These optional domain fields are normalized and validated below.
+        // Suppress MVC's implicit Required validation for an empty hook configuration.
+        ModelState.Remove("Input.ConsistencyContainerNames");
+        ModelState.Remove("Input.PreBackupCommand");
+        ModelState.Remove("Input.PostBackupCommand");
         if (SelectedLabelIds.Any(labelId => !data.JobLabels.Any(label => label.Id == labelId)))
             ModelState.AddModelError(nameof(SelectedLabelIds), "Mindestens ein ausgewählter Tag existiert nicht.");
         if (!BackupSchedule.TryBuild(ScheduleKind, ScheduleInterval, ScheduleIntervalUnit, ScheduleTime, ScheduleWeekday, out var schedule, out var scheduleError))

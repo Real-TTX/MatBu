@@ -40,11 +40,13 @@ public sealed class DockerVolumeBackupWorker(PersistentStore store, BackupTaskEx
             var now = DateTimeOffset.UtcNow;
             foreach (var job in data.TransferJobs.Where(job => job.State == "Running"))
             {
+                var task = data.Tasks.FirstOrDefault(task => task.Id == job.TaskId);
                 job.State = "Fehler";
-                job.Error = "Worker wurde neu gestartet; der Lauf wird automatisch vom vorhandenen Checkpoint fortgesetzt.";
+                job.Error = task is null
+                    ? "Worker wurde neu gestartet; die zugehörige Job-Konfiguration wurde inzwischen gelöscht und der Lauf kann nicht fortgesetzt werden."
+                    : "Worker wurde neu gestartet; der Lauf wird automatisch vom vorhandenen Checkpoint fortgesetzt.";
                 job.UpdateDate = now;
 
-                var task = data.Tasks.FirstOrDefault(task => task.Id == job.TaskId);
                 if (task is not null)
                 {
                     task.State = "Geplant";
@@ -58,8 +60,10 @@ public sealed class DockerVolumeBackupWorker(PersistentStore store, BackupTaskEx
                     TransferJobId = job.Id,
                     Sequence = data.JobSteps.Where(step => step.TransferJobId == job.Id).Select(step => step.Sequence).DefaultIfEmpty().Max() + 1,
                     Stage = "Recovery",
-                    State = "Resumed",
-                    Message = "Unterbrochener Lauf erkannt und automatisch zur Wiederaufnahme eingeplant.",
+                    State = task is null ? "Failed" : "Resumed",
+                    Message = task is null
+                        ? "Unterbrochener Lauf erkannt; die zugehörige Job-Konfiguration existiert nicht mehr und der Lauf wurde endgültig beendet."
+                        : "Unterbrochener Lauf erkannt und automatisch zur Wiederaufnahme eingeplant.",
                     InstanceName = "Worker",
                     Location = job.CheckpointPath,
                     BytesTransferred = job.BytesTransferred,

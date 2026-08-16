@@ -10,6 +10,26 @@ namespace MatBu.Tests;
 public sealed class PersistentStoreConcurrencyTests
 {
     [Fact]
+    public void NextId_DoesNotReuseDeletedHighestId()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "matbu-id-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var store = new PersistentStore(new TestHostEnvironment(directory));
+            var first = store.NextId([1, 2]);
+            var afterDeletion = store.NextId([1]);
+
+            Assert.True(afterDeletion > first);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void SecondaryCommandPayload_IsProtectedAtRestAndCanBeUnprotected()
     {
         var directory = Path.Combine(Path.GetTempPath(), "matbu-command-tests-" + Guid.NewGuid().ToString("N"));

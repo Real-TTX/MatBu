@@ -2,9 +2,11 @@ using System.Security.Cryptography;
 using MatBu.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace MatBu.Pages;
 
+[EnableRateLimiting("login")]
 public class LoginModel(PersistentStore store) : PageModel
 {
     [BindProperty] public string UserName { get; set; } = "admin";

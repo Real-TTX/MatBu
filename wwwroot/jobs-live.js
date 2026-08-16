@@ -3,6 +3,8 @@
   const formatDate = value => new Date(value).toLocaleString('de-DE');
   const formatBytes = value => value >= 1024 ** 4 ? `${(value / 1024 ** 4).toFixed(2)} TiB` : value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(2)} GiB` : value >= 1024 ** 2 ? `${(value / 1024 ** 2).toFixed(2)} MiB` : value >= 1024 ? `${(value / 1024).toFixed(1)} KiB` : `${value || 0} Bytes`;
   const formatRemaining = job => {
+    if (job.state === 'Failed' || job.state === 'Fehler') return 'Abgebrochen';
+    if (job.state === 'Completed') return 'Fertig';
     if (!job.totalBytes) return '—';
     const remainingBytes = Math.max(0, job.totalBytes - job.bytesTransferred);
     if (remainingBytes === 0) return 'Fertig';

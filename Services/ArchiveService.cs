@@ -64,7 +64,10 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         }
 
         var building = outputPath + ".building";
-        var temporaryBuilding = source.Kind == ObjectKind.LocalFolder && IsPathWithin(source.Location, building)
+        // Docker streams a live volume. Its staging file must never be created in a
+        // potentially identical mounted volume, otherwise the TAR can archive itself.
+        var temporaryBuilding = source.Kind == ObjectKind.DockerVolume ||
+                                source.Kind == ObjectKind.LocalFolder && IsPathWithin(source.Location, building)
                 ? Path.Combine(Path.GetTempPath(), $"matbu-archive-{Guid.NewGuid():N}.tar.building")
                 : building;
         try
@@ -207,12 +210,6 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
     {
         return ReadDockerVolumeArchiveAsync(volumeName, async input =>
         {
-            if (selection.Count == 0)
-            {
-                await input.CopyToAsync(output, 4 * 1024 * 1024, cancellationToken);
-                return true;
-            }
-
             using var reader = new System.Formats.Tar.TarReader(input, leaveOpen: true);
             using var writer = new System.Formats.Tar.TarWriter(output, System.Formats.Tar.TarEntryFormat.Pax, leaveOpen: true);
             System.Formats.Tar.TarEntry? entry;
@@ -220,7 +217,7 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var relative = NormalizeDockerArchivePath(entry.Name);
-                if (string.IsNullOrEmpty(relative) || !SourceSelection.Includes(relative, selection)) continue;
+                if (string.IsNullOrEmpty(relative) || selection.Count > 0 && !SourceSelection.Includes(relative, selection)) continue;
                 var outputEntry = new System.Formats.Tar.PaxTarEntry(entry.EntryType, relative)
                 {
                     ModificationTime = entry.ModificationTime,

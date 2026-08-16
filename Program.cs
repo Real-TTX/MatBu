@@ -4,6 +4,9 @@ using MatBu.Data;
 using MatBu.Models;
 using MatBu.Services;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 var dataPath = Environment.GetEnvironmentVariable("MATBU_DATA_PATH") ?? Path.Combine(builder.Environment.ContentRootPath, "data");
@@ -16,6 +19,27 @@ builder.Services
 builder.Services.AddSingleton<PersistentStore>();
 builder.Services.AddRazorPages();
 builder.Services.AddProblemDetails();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("login", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    if (!string.Equals(Environment.GetEnvironmentVariable("MATBU_TRUST_FORWARD_HEADERS"), "true", StringComparison.OrdinalIgnoreCase)) return;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 builder.Services.AddHostedService<BackupScheduler>();
 builder.Services.AddHostedService<DockerVolumeBackupWorker>();
 builder.Services.AddSingleton<SmbClientService>();
@@ -48,7 +72,11 @@ builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.C
 
 var app = builder.Build();
 app.UseExceptionHandler();
+app.UseForwardedHeaders();
+if (app.Environment.IsProduction()) app.UseHsts();
 app.UseStaticFiles();
+app.UseRouting();
+app.UseRateLimiter();
 app.Use(async (context, next) =>
 {
     if (context.Request.Path.StartsWithSegments("/api") &&
@@ -499,7 +527,7 @@ app.MapPost("/api/auth/login", (LoginRequest request, HttpContext context, Persi
     store.Update(data => data.UserSessions.Add(new UserSession { Id = store.NextId(data.UserSessions.Select(x => x.Id)), Token = token, UserId = user.Id, ExpiresDate = DateTimeOffset.UtcNow.AddHours(12), CreateDate = DateTimeOffset.UtcNow, UpdateDate = DateTimeOffset.UtcNow }));
     context.Response.Cookies.Append("matbu_session", token, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict, Secure = context.Request.IsHttps, MaxAge = TimeSpan.FromHours(12) });
     return Results.Ok(new { user = user.UserName, role = user.Role.ToString() });
-});
+}).RequireRateLimiting("login");
 app.MapPost("/api/auth/logout", (HttpContext context, PersistentStore store) => { var token = context.Request.Cookies["matbu_session"]; store.Update(data => data.UserSessions.RemoveAll(x => x.Token == token)); context.Response.Cookies.Delete("matbu_session"); return Results.Ok(); });
 
 static AppUser? CurrentUser(HttpContext context, PersistentStore store)

@@ -361,6 +361,9 @@ public sealed class ReverseIncrementalRepositoryService(
                 }
                 else if (await smbClient.RelativeFileExistsAsync(target.Location, remoteCurrent, credential, cancellationToken))
                 {
+                    Directory.CreateDirectory(Path.GetDirectoryName(oldLocal)!);
+                    await smbClient.DownloadRelativeFileAsync(target.Location, remoteCurrent, oldLocal, credential, cancellationToken);
+                    if (await FileMatchesAsync(oldLocal, file.ContentHash, cancellationToken)) continue;
                     throw new InvalidDataException($"Das SMB-Plain-Current-Ziel enthält eine nicht katalogisierte Datei: {file.RelativePath}");
                 }
 

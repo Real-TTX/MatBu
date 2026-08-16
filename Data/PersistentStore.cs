@@ -15,6 +15,7 @@ public sealed class PersistentStore
     private readonly string _legacyPath;
     private readonly string _monitoringTokenPath;
     private readonly string _writeLockPath;
+    private readonly string _connectionString;
     private readonly IDataProtectionProvider _dataProtectionProvider;
     private readonly IDataProtector _credentialProtector;
     private readonly IDataProtector _instanceTokenProtector;
@@ -33,11 +34,18 @@ public sealed class PersistentStore
         _credentialProtector = _dataProtectionProvider.CreateProtector("MatBu.SmbCredential.v1");
         _instanceTokenProtector = _dataProtectionProvider.CreateProtector("MatBu.InstanceToken.v1");
         _secondaryCommandProtector = _dataProtectionProvider.CreateProtector("MatBu.SecondaryCommand.v1");
-        var builder = new DbContextOptionsBuilder<MatBuDbContext>().UseSqlite($"Data Source={Path.Combine(directory, "matbu.db")}");
+        _connectionString = $"Data Source={Path.Combine(directory, "matbu.db")};Default Timeout=30";
+        var builder = new DbContextOptionsBuilder<MatBuDbContext>().UseSqlite(_connectionString);
         _options = builder.Options;
         using var initializationLock = AcquireProcessLock();
         using var db = new MatBuDbContext(_options);
         db.Database.EnsureCreated();
+        // Migrate the short-lived AUTOINCREMENT sequence implementation without
+        // losing its high-water mark, then keep only one durable sequence row.
+        db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS GlobalIdSequence (Id INTEGER NOT NULL CONSTRAINT PK_GlobalIdSequence PRIMARY KEY AUTOINCREMENT)");
+        db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS IdSequence (Id INTEGER NOT NULL CONSTRAINT PK_IdSequence PRIMARY KEY CHECK (Id = 1), Value INTEGER NOT NULL)");
+        db.Database.ExecuteSqlRaw("INSERT OR IGNORE INTO IdSequence (Id, Value) SELECT 1, COALESCE(MAX(Id), 0) FROM GlobalIdSequence");
+        db.Database.ExecuteSqlRaw("DROP TABLE GlobalIdSequence");
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupObject ADD COLUMN InstanceId INTEGER NOT NULL DEFAULT 1"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupObject ADD COLUMN LastTestDate TEXT NULL"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE BackupObject ADD COLUMN LastTestMessage TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
@@ -126,7 +134,7 @@ public sealed class PersistentStore
         db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS IX_TransferChunk_TransferId_Sequence ON TransferChunk (TransferId, Sequence)");
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_TransferChunk_TransferId_State ON TransferChunk (TransferId, State)");
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_TransferChunk_Hash ON TransferChunk (Hash)");
-        if (!db.Users.Any()) ImportOrSeed(db);
+        if (!db.Users.Any()) ImportOrSeed(db, environment);
         if (!db.Instances.Any())
         {
             var now = DateTimeOffset.UtcNow;
@@ -367,7 +375,20 @@ public sealed class PersistentStore
         throw new IOException("Die MatBu-Datensperre konnte nicht erworben werden.");
     }
 
-    public long NextId(IEnumerable<long> ids) => ids.DefaultIfEmpty().Max() + 1;
+    public long NextId(IEnumerable<long> ids)
+    {
+        var floor = ids.DefaultIfEmpty().Max();
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "UPDATE IdSequence SET Value = MAX(Value, $floor) + 1 WHERE Id = 1 RETURNING Value;";
+        command.Parameters.AddWithValue("$floor", floor);
+        var id = Convert.ToInt64(command.ExecuteScalar());
+        transaction.Commit();
+        return id;
+    }
 
     public bool IsSessionValid(string? token)
     {
@@ -431,16 +452,19 @@ public sealed class PersistentStore
         return CryptographicOperations.FixedTimeEquals(actual, expected);
     }
 
-    private void ImportOrSeed(MatBuDbContext db)
+    private void ImportOrSeed(MatBuDbContext db, IHostEnvironment environment)
     {
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         jsonOptions.Converters.Add(new JsonStringEnumConverter());
         var data = File.Exists(_legacyPath)
             ? JsonSerializer.Deserialize<AppData>(File.ReadAllText(_legacyPath), jsonOptions)
             : null;
-        data ??= Seed();
-        if (data.Users.Count == 0) data.Users.Add(Seed().Users[0]);
-        if (data.Users[0].PasswordHash == "local") data.Users[0].PasswordHash = HashPassword("admin");
+        if (data is null)
+            data = Seed(ResolveInitialAdminPassword(environment));
+        else if (data.Users.Count == 0)
+            data.Users.Add(Seed(ResolveInitialAdminPassword(environment)).Users[0]);
+        else if (data.Users[0].PasswordHash == "local")
+            data.Users[0].PasswordHash = HashPassword(ResolveInitialAdminPassword(environment));
         if (data.Instances.Count == 0) data.Instances.Add(new MatBuInstance { Id = 1, Name = "Primary", Role = InstanceRole.Primary, Status = InstanceStatus.Online, CreateDate = DateTimeOffset.UtcNow, UpdateDate = DateTimeOffset.UtcNow });
         db.Instances.AddRange(data.Instances);
         db.Objects.AddRange(data.Objects);
@@ -461,13 +485,22 @@ public sealed class PersistentStore
         db.SaveChanges();
     }
 
-    private static AppData Seed()
+    private static string ResolveInitialAdminPassword(IHostEnvironment environment)
+    {
+        var password = Environment.GetEnvironmentVariable("MATBU_INITIAL_ADMIN_PASSWORD");
+        if (!string.IsNullOrWhiteSpace(password) && password.Length >= 12) return password;
+        if (environment.IsProduction())
+            throw new InvalidOperationException("Für den ersten Produktionsstart muss MATBU_INITIAL_ADMIN_PASSWORD mit mindestens 12 Zeichen gesetzt sein.");
+        return "admin";
+    }
+
+    private static AppData Seed(string initialAdminPassword)
     {
         var now = DateTimeOffset.UtcNow;
         return new AppData
         {
             Instances = [new MatBuInstance { Id = 1, Name = "Primary", Role = InstanceRole.Primary, Status = InstanceStatus.Online, CreateDate = now, UpdateDate = now }],
-            Users = [new AppUser { Id = 1, UserName = "admin", PasswordHash = HashPassword("admin"), Role = UserRole.Admin, CreateDate = now, UpdateDate = now }]
+            Users = [new AppUser { Id = 1, UserName = "admin", PasswordHash = HashPassword(initialAdminPassword), Role = UserRole.Admin, CreateDate = now, UpdateDate = now }]
         };
     }
 }
