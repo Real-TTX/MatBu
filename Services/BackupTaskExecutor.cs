@@ -229,7 +229,7 @@ public sealed class BackupTaskExecutor(
         RecordNativeSnapshot(task, job, result);
         MarkTask(task.Id, "Gesichert");
         MarkJob(job.Id, "Completed", result.TotalBytes, result.TotalBytes, result.Destination, speed: 0, resolvedDestination: result.Destination);
-        AppendStep(job.Id, "Retention", "Info", "Native PBS-Retention wird derzeit über die Prune-Regeln des PBS-Datastores verwaltet.", targetInstance.Name, target.Location);
+        await ApplyRetentionSafelyAsync(task, target, targetInstance, job.Id, cancellationToken);
         AppendStep(job.Id, "Abschluss", "Completed", $"Proxmox-Native-Backup erfolgreich. Weg: {route}. PVE schrieb direkt nach PBS.", $"{sourceInstance.Name} → PBS", result.Destination, result.TotalBytes, result.TotalBytes);
     }
 

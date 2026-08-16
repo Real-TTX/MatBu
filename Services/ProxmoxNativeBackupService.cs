@@ -16,7 +16,8 @@ public sealed record ProxmoxNativeSnapshotResult(
     string GuestName,
     string SnapshotPath,
     long Size,
-    DateTimeOffset CreateDate);
+    DateTimeOffset CreateDate,
+    bool CatalogVerified = false);
 
 public sealed record ProxmoxNativeBackupResult(
     IReadOnlyList<ProxmoxNativeSnapshotResult> Snapshots,
@@ -53,7 +54,8 @@ public sealed class ProxmoxNativeBackupService(
                 guest.GuestName,
                 snapshot?.Path ?? $"{backupType}/{guest.GuestId}/{guest.CompletedDate.ToUnixTimeSeconds()}",
                 snapshot?.Size ?? 0,
-                snapshot?.CreateDate ?? guest.CompletedDate));
+                snapshot?.CreateDate ?? guest.CompletedDate,
+                snapshot is not null));
         }
 
         var ns = string.IsNullOrWhiteSpace(pbsSettings.Namespace) ? "" : $"/{pbsSettings.Namespace.Trim('/')}";

@@ -26,6 +26,50 @@ public sealed class ProxmoxBackupServerTests
         Assert.Throws<FormatException>(() => ProxmoxBackupServerLocation.Parse(value));
     }
 
+    [Theory]
+    [InlineData("vm/100/1755302400", "vm", "100", 1755302400L)]
+    [InlineData("/ct/203/1755302401/", "ct", "203", 1755302401L)]
+    public void SnapshotPath_ParseAcceptsNativeGuestSnapshots(string value, string type, string id, long time)
+    {
+        var result = ProxmoxBackupServerSnapshotPath.Parse(value);
+
+        Assert.Equal(type, result.BackupType);
+        Assert.Equal(id, result.BackupId);
+        Assert.Equal(time, result.BackupTime);
+    }
+
+    [Theory]
+    [InlineData("host/server/1755302400")]
+    [InlineData("vm/not-a-number/1755302400")]
+    [InlineData("vm/100/not-a-time")]
+    [InlineData("vm/100")]
+    public void SnapshotPath_ParseRejectsUnsafePaths(string value)
+    {
+        Assert.Throws<FormatException>(() => ProxmoxBackupServerSnapshotPath.Parse(value));
+    }
+
+    [Fact]
+    public void NativeRetention_UsesOnlyCatalogVerifiedSnapshots()
+    {
+        var manifest = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new ProxmoxNativeSnapshotResult("qemu", 100, "vm", "vm/100/1755302400", 42, DateTimeOffset.UtcNow, true)
+        });
+
+        Assert.Equal(new[] { "vm/100/1755302400" }, BackupRetentionService.ParseNativeSnapshotPaths(manifest));
+    }
+
+    [Fact]
+    public void NativeRetention_RejectsUnverifiedSnapshots()
+    {
+        var manifest = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new ProxmoxNativeSnapshotResult("qemu", 100, "vm", "vm/100/1755302400", 0, DateTimeOffset.UtcNow)
+        });
+
+        Assert.Throws<InvalidDataException>(() => BackupRetentionService.ParseNativeSnapshotPaths(manifest));
+    }
+
     [Fact]
     public void RoutePolicy_AcceptsNativeRouteOnSameInstance()
     {

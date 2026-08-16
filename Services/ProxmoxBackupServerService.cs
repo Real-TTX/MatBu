@@ -32,6 +32,19 @@ public sealed record ProxmoxBackupServerSnapshot(string BackupType, string Backu
     public DateTimeOffset CreateDate => DateTimeOffset.FromUnixTimeSeconds(BackupTime);
 }
 
+public sealed record ProxmoxBackupServerSnapshotPath(string BackupType, string BackupId, long BackupTime)
+{
+    public static ProxmoxBackupServerSnapshotPath Parse(string value)
+    {
+        var parts = (value ?? "").Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3 || parts[0] is not ("vm" or "ct") ||
+            !int.TryParse(parts[1], out var guestId) || guestId <= 0 ||
+            !long.TryParse(parts[2], out var backupTime) || backupTime <= 0)
+            throw new FormatException($"Ungültiger PBS-Snapshotpfad '{value}'. Erwartet wird vm/<ID>/<Unixzeit> oder ct/<ID>/<Unixzeit>.");
+        return new ProxmoxBackupServerSnapshotPath(parts[0], guestId.ToString(), backupTime);
+    }
+}
+
 public sealed class ProxmoxBackupServerService
 {
     public async Task<GatewayObjectTestResult> TestAsync(string location, string? tokenId, string? tokenSecret, CancellationToken cancellationToken)
@@ -65,6 +78,38 @@ public sealed class ProxmoxBackupServerService
             .Where(snapshot => snapshot is not null && snapshot.CreateDate >= notBefore)
             .OrderByDescending(snapshot => snapshot!.BackupTime)
             .FirstOrDefault();
+    }
+
+    public async Task ForgetSnapshotAsync(
+        string location,
+        string? tokenId,
+        string? tokenSecret,
+        string snapshotPath,
+        CancellationToken cancellationToken)
+    {
+        var settings = ProxmoxBackupServerLocation.Parse(location);
+        var snapshot = ProxmoxBackupServerSnapshotPath.Parse(snapshotPath);
+        using var client = CreateClient(settings, tokenId, tokenSecret);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Delete,
+            $"api2/json/admin/datastore/{Uri.EscapeDataString(settings.Datastore)}/snapshots");
+        var parameters = new List<KeyValuePair<string, string>>
+        {
+            new("backup-type", snapshot.BackupType),
+            new("backup-id", snapshot.BackupId),
+            new("backup-time", snapshot.BackupTime.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        };
+        if (!string.IsNullOrWhiteSpace(settings.Namespace)) parameters.Add(new("ns", settings.Namespace));
+        request.Content = new FormUrlEncodedContent(parameters);
+        using var response = await client.SendAsync(request, cancellationToken);
+        // Retention may be retried after a connection loss. A snapshot removed by the
+        // previous attempt already satisfies the requested end state.
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return;
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new HttpRequestException($"PBS konnte Snapshot '{snapshotPath}' nicht entfernen ({(int)response.StatusCode}): {body[..Math.Min(body.Length, 300)]}");
+        }
     }
 
     private static ProxmoxBackupServerSnapshot? ParseSnapshot(JsonElement item)

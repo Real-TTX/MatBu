@@ -9,7 +9,8 @@ public sealed record RetentionVersionPlan(
     long JobId,
     BackupMethod Method,
     string ArtifactName,
-    string SnapshotToken);
+    string SnapshotToken,
+    IReadOnlyList<string>? NativeSnapshotPaths = null);
 
 public sealed record RetentionCleanupPayload(
     long TaskId,
@@ -19,12 +20,13 @@ public sealed record RetentionCleanupPayload(
     IReadOnlyList<RetentionVersionPlan> ExpiredVersions,
     IReadOnlyList<string> RetainedSnapshotTokens);
 
-public sealed record RetentionCleanupResult(int ExpiredVersions, int DeletedChunks, string Message);
+public sealed record RetentionCleanupResult(int ExpiredVersions, int DeletedChunks, string Message, int DeletedNativeSnapshots = 0);
 
 public sealed partial class BackupRetentionService(
     PersistentStore store,
     SmbClientService smbClient,
     ReverseIncrementalRepositoryService incrementalRepository,
+    ProxmoxBackupServerService proxmoxBackupServer,
     SecondaryCommandService commands,
     ILogger<BackupRetentionService> logger)
 {
@@ -54,7 +56,7 @@ public sealed partial class BackupRetentionService(
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var credential = target.Kind == ObjectKind.Smb ? store.GetSmbCredential(target.Id) : null;
+        var credential = target.Kind is ObjectKind.Smb or ObjectKind.ProxmoxBackupServer ? store.GetSmbCredential(target.Id) : null;
         RetentionCleanupResult physical;
         if (targetInstance.Role == InstanceRole.Secondary)
         {
@@ -93,6 +95,24 @@ public sealed partial class BackupRetentionService(
             else if (target.Kind == ObjectKind.Smb) await smbClient.DeleteRelativeFileAsync(target.Location, version.ArtifactName, credential, cancellationToken);
         }
 
+        var nativeSnapshotPaths = expiredVersions
+            .Where(version => version.Method == BackupMethod.ProxmoxNative)
+            .SelectMany(version => version.NativeSnapshotPaths ?? [])
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (expiredVersions.Any(version => version.Method == BackupMethod.ProxmoxNative) && nativeSnapshotPaths.Count == 0)
+            throw new InvalidDataException("PBS-Retention abgebrochen: Die abgelaufene Version enthält keinen verifizierten PBS-Snapshot.");
+        foreach (var snapshotPath in nativeSnapshotPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await proxmoxBackupServer.ForgetSnapshotAsync(
+                target.Location,
+                credential?.Username,
+                credential?.Password,
+                snapshotPath,
+                cancellationToken);
+        }
+
         var reverseTokens = expiredVersions
             .Where(version => BackupMethodPolicy.IsChunked(version.Method) && !string.IsNullOrWhiteSpace(version.SnapshotToken))
             .Select(version => version.SnapshotToken)
@@ -101,10 +121,10 @@ public sealed partial class BackupRetentionService(
         var deletedChunks = reverseTokens.Count == 0
             ? 0
             : await incrementalRepository.ApplyRetentionAsync(task, target, reverseTokens, retainedSnapshotTokens, credential, cancellationToken);
-        return new RetentionCleanupResult(
-            expiredVersions.Count,
-            deletedChunks,
-            $"Retention '{task.Retention}': {expiredVersions.Count} Version(en) und {deletedChunks} nicht mehr benötigte Chunk(s) entfernt.");
+        var message = nativeSnapshotPaths.Count > 0
+            ? $"Retention '{task.Retention}': {expiredVersions.Count} Version(en) und {nativeSnapshotPaths.Count} verifizierte PBS-Snapshot(s) bereinigt (entfernt oder bereits abwesend)."
+            : $"Retention '{task.Retention}': {expiredVersions.Count} Version(en) und {deletedChunks} nicht mehr benötigte Chunk(s) entfernt.";
+        return new RetentionCleanupResult(expiredVersions.Count, deletedChunks, message, nativeSnapshotPaths.Count);
     }
 
     public static DateTimeOffset GetCutoff(string? retention, DateTimeOffset now)
@@ -130,7 +150,25 @@ public sealed partial class BackupRetentionService(
         job.Id,
         job.Method,
         ExtractFileName(job.ResolvedDestination),
-        FindSnapshotToken(data, job));
+        FindSnapshotToken(data, job),
+        job.Method == BackupMethod.ProxmoxNative ? FindNativeSnapshotPaths(data, job) : null);
+
+    public static IReadOnlyList<string> ParseNativeSnapshotPaths(string manifestJson)
+    {
+        var snapshots = JsonSerializer.Deserialize<List<ProxmoxNativeSnapshotResult>>(manifestJson)
+            ?? throw new InvalidDataException("Der PBS-Snapshotkatalog ist leer oder ungültig.");
+        if (snapshots.Count == 0 || snapshots.Any(snapshot => !snapshot.CatalogVerified))
+            throw new InvalidDataException("PBS-Retention abgebrochen: Mindestens ein Snapshot wurde nach dem Backup nicht eindeutig im PBS verifiziert.");
+        foreach (var snapshot in snapshots) ProxmoxBackupServerSnapshotPath.Parse(snapshot.SnapshotPath);
+        return snapshots.Select(snapshot => snapshot.SnapshotPath).Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    private static IReadOnlyList<string> FindNativeSnapshotPaths(AppData data, TransferJob job)
+    {
+        var snapshot = data.BackupSnapshots.FirstOrDefault(item => item.Id == job.SnapshotId || item.TransferJobId == job.Id)
+            ?? throw new InvalidDataException($"PBS-Retention abgebrochen: Katalog für Job #{job.Id} fehlt.");
+        return ParseNativeSnapshotPaths(snapshot.ManifestPath);
+    }
 
     private static string FindSnapshotToken(AppData data, TransferJob job) => data.BackupSnapshots
         .FirstOrDefault(snapshot => snapshot.Id == job.SnapshotId || snapshot.TransferJobId == job.Id)?.Token ?? "";
