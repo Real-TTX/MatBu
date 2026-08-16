@@ -2,8 +2,8 @@ name: matbu-remote-secondary
 
 services:
   secondary:
-    image: matbu:latest
-    build: .
+    image: ghcr.io/real-ttx/matbu:dev
+    pull_policy: always
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Production

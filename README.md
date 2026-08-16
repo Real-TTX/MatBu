@@ -24,11 +24,13 @@ Der Release-Stack bindet Port 9293 standardmäßig nur an `127.0.0.1`. Für Zugr
 
 ## Secondary in einem entfernten Netzwerk testen
 
-Auf der Primary zuerst unter **Instanzen** eine Secondary anlegen und deren Instance-Token kopieren. Dann in `docker-compose.remote-secondary.yml` nur `MATBU_PRIMARY_ENDPOINT` und `MATBU_INSTANCE_TOKEN` direkt ersetzen. Danach startet ein einziger Befehl die Secondary:
+Auf der Primary zuerst unter **Instanzen** eine Secondary anlegen und deren Instance-Token kopieren. Dann in `docker-compose.remote-secondary.yml` nur `MATBU_PRIMARY_ENDPOINT` und `MATBU_INSTANCE_TOKEN` direkt ersetzen. Die Compose lädt `ghcr.io/real-ttx/matbu:dev`; Quellcode und lokaler Build sind auf dem entfernten Host nicht erforderlich. Danach startet ein einziger Befehl die Secondary:
 
 ```bash
-docker compose -f docker-compose.remote-secondary.yml up -d --build
+docker compose -f docker-compose.remote-secondary.yml up -d
 ```
+
+Der GitHub-Workflow `.github/workflows/container.yml` veröffentlicht `:dev` vom Branch `dev` und `:latest` vom Branch `main`. Das GHCR-Package muss nach dem ersten Lauf einmalig öffentlich geschaltet werden, damit entfernte Hosts es ohne `docker login` laden können.
 
 Die Secondary veröffentlicht keinen Port und benötigt keine eingehende Firewall-Regel. Sie verbindet sich ausschließlich ausgehend zu `MATBU_PRIMARY_ENDPOINT`; bei HTTPS normalerweise über TCP 443. Das Docker-Socket-Mount ist nur nötig, wenn Docker-Volumes dieses entfernten Hosts gesichert werden sollen. Den Verbindungsstatus sieht man auf der Primary unter **Instanzen** oder auf dem Remote-Host mit:
 
