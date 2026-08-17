@@ -1,5 +1,6 @@
 using MatBu.Data;
 using MatBu.Models;
+using MatBu.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MatBu.Pages.Instances;
@@ -8,44 +9,108 @@ public class EditModel(PersistentStore store) : AppPageModel(store)
 {
     [BindProperty(SupportsGet = true)] public long? Id { get; set; }
     [BindProperty] public MatBuInstance Input { get; set; } = new() { Role = InstanceRole.Secondary };
-    [BindProperty] public string? InstanceToken { get; set; }
-    public string? Error { get; private set; }
+    public bool IsPrimary { get; private set; }
 
     public IActionResult OnGet()
     {
-        if (!LoadUser()) return RedirectToPage("/Login");
-        if (CurrentUser!.Role == UserRole.User) return Forbid();
-        if (Id is not null) Input = Store.Read().Instances.FirstOrDefault(x => x.Id == Id) ?? new MatBuInstance();
-        ViewData["UserName"] = CurrentUser.UserName;
+        var authorization = AuthorizeEditor();
+        if (authorization is not null) return authorization;
+
+        if (Id is null)
+        {
+            Input.Endpoint = $"{Request.Scheme}://{Request.Host}{Request.PathBase}".TrimEnd('/');
+            SetPageMetadata();
+            return Page();
+        }
+
+        var instance = Store.Read().Instances.FirstOrDefault(item => item.Id == Id);
+        if (instance is null) return NotFound();
+        Input = instance;
+        IsPrimary = instance.Role == InstanceRole.Primary;
+        SetPageMetadata();
         return Page();
     }
 
     public IActionResult OnPost()
     {
-        if (!LoadUser()) return RedirectToPage("/Login");
-        if (CurrentUser!.Role == UserRole.User) return Forbid();
-        if (string.IsNullOrWhiteSpace(Input.Name)) { Error = "Ein Name ist erforderlich."; return Page(); }
-        if (Input.Role == InstanceRole.Secondary && !string.IsNullOrWhiteSpace(Input.Endpoint) && !Uri.TryCreate(Input.Endpoint, UriKind.Absolute, out _)) { Error = "Der Primary-Endpunkt muss eine gültige URL sein."; return Page(); }
-        if (Input.Role == InstanceRole.Secondary && Id is null && string.IsNullOrWhiteSpace(InstanceToken)) { Error = "Für eine Secondary-Instanz ist ein Instance-Token erforderlich."; return Page(); }
+        var authorization = AuthorizeEditor();
+        if (authorization is not null) return authorization;
 
-        var now = DateTimeOffset.UtcNow;
+        var existing = Id is null ? null : Store.Read().Instances.FirstOrDefault(item => item.Id == Id);
+        if (Id is not null && existing is null) return NotFound();
+        IsPrimary = existing?.Role == InstanceRole.Primary;
+        ValidateInput();
+        SetPageMetadata();
+        if (!ModelState.IsValid) return Page();
+
+        if (existing is not null)
+        {
+            Store.Update(data =>
+            {
+                var item = data.Instances.First(instance => instance.Id == existing.Id);
+                item.Name = Input.Name.Trim();
+                if (item.Role == InstanceRole.Secondary)
+                {
+                    item.Endpoint = Input.Endpoint.Trim().TrimEnd('/');
+                    item.Enabled = Input.Enabled;
+                }
+                else
+                {
+                    item.Endpoint = string.Empty;
+                    item.Enabled = true;
+                }
+                item.UpdateDate = DateTimeOffset.UtcNow;
+                item.UpdateUserId = CurrentUser!.Id;
+            });
+            return RedirectToPage("/Instances/Index");
+        }
+
+        var token = SecondaryComposeGenerator.GenerateToken();
+        long createdId = 0;
         Store.Update(data =>
         {
-            if (Id is null)
+            var now = DateTimeOffset.UtcNow;
+            createdId = Store.NextId(data.Instances.Select(item => item.Id));
+            var instance = new MatBuInstance
             {
-                Input.Id = Store.NextId(data.Instances.Select(x => x.Id));
-                Input.CreateDate = Input.UpdateDate = now;
-                Input.Status = InstanceStatus.Unknown;
-                data.Instances.Add(Input);
-                if (!string.IsNullOrWhiteSpace(InstanceToken)) Store.SetInstanceToken(data, Input.Id, InstanceToken);
-            }
-            else
-            {
-                var item = data.Instances.First(x => x.Id == Id);
-                item.Name = Input.Name; item.Role = Input.Role; item.Endpoint = Input.Endpoint; item.Enabled = Input.Enabled; item.UpdateDate = now;
-                if (!string.IsNullOrWhiteSpace(InstanceToken)) Store.SetInstanceToken(data, item.Id, InstanceToken);
-            }
+                Id = createdId,
+                Name = Input.Name.Trim(),
+                Role = InstanceRole.Secondary,
+                Endpoint = Input.Endpoint.Trim().TrimEnd('/'),
+                Enabled = Input.Enabled,
+                Status = InstanceStatus.Unknown,
+                CreateDate = now,
+                CreateUserId = CurrentUser!.Id,
+                UpdateDate = now,
+                UpdateUserId = CurrentUser.Id
+            };
+            data.Instances.Add(instance);
+            Store.SetInstanceToken(data, createdId, token);
         });
-        return RedirectToPage("/Instances/Index");
+        return RedirectToPage("/Instances/Setup", new { id = createdId });
+    }
+
+    private IActionResult? AuthorizeEditor()
+    {
+        if (!LoadUser()) return RedirectToPage("/Login");
+        return CurrentUser!.Role == UserRole.User ? Forbid() : null;
+    }
+
+    private void ValidateInput()
+    {
+        if (string.IsNullOrWhiteSpace(Input.Name))
+            ModelState.AddModelError("Input.Name", "Ein Name ist erforderlich.");
+        if (IsPrimary) return;
+        var endpoint = Input.Endpoint?.Trim();
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ||
+            !(uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+              uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            ModelState.AddModelError("Input.Endpoint", "Eine von der Secondary erreichbare HTTP- oder HTTPS-Adresse ist erforderlich.");
+    }
+
+    private void SetPageMetadata()
+    {
+        ViewData["Title"] = Id is null ? "Secondary erstellen" : IsPrimary ? "Primary bearbeiten" : "Secondary bearbeiten";
+        ViewData["UserName"] = CurrentUser?.UserName;
     }
 }

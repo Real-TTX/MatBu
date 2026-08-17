@@ -1,0 +1,57 @@
+@page
+@model MatBu.Pages.Instances.SetupModel
+@{ ViewData["Title"] = $"{Model.Instance.Name} einrichten"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
+
+<div class="page-heading"><div><p class="eyebrow">Secondary</p><h1>@Model.Instance.Name einrichten</h1></div></div>
+
+<div class="panel secondary-setup">
+    <div class="setup-summary">
+        <div><small>Secondary</small><strong>@Model.Instance.Name</strong></div>
+        <div><small>Verbindet sich ausgehend mit</small><code>@Model.Instance.Endpoint</code></div>
+        <div><small>Eingehender Port</small><strong>Nicht erforderlich</strong></div>
+    </div>
+
+    @if (TempData["Message"] is string message) { <div class="test-result success">@message</div> }
+    @if (!string.IsNullOrWhiteSpace(Model.Error)) { <div class="test-result error">@Model.Error</div> }
+
+    @if (!string.IsNullOrWhiteSpace(Model.Compose))
+    {
+        <div class="compose-editor">
+            <div><label for="secondary-compose">Fertiges Production-Compose</label><small>Enthält das geheime Instance-Token.</small></div>
+            <textarea id="secondary-compose" readonly spellcheck="false">@Model.Compose</textarea>
+        </div>
+        <div class="secret-warning">Behandle diese Datei wie ein Kennwort. Wer das Token besitzt, kann sich als diese Secondary bei der Primary anmelden.</div>
+        <div class="form-actions button-row">
+            <button class="button primary" type="button" id="copy-compose">Compose kopieren</button>
+            <a class="button" asp-page-handler="Download" asp-route-id="@Model.Instance.Id"><svg class="ui-icon"><use href="#icon-download"></use></svg> Compose herunterladen</a>
+            <a class="button" asp-page="/Instances/Index">Zurück</a>
+        </div>
+        <div class="setup-command"><small>Auf der Secondary starten</small><code>docker compose up -d</code></div>
+    }
+
+    <form method="post" asp-page-handler="Regenerate" asp-route-id="@Model.Instance.Id" class="token-rotate" onsubmit="return confirm('Das bisherige Token wird sofort ungültig. Token wirklich erneuern?')">
+        <button class="button danger" type="submit">Token erneuern</button>
+        <small>Danach muss das neu heruntergeladene Compose auf der Secondary eingespielt werden.</small>
+    </form>
+</div>
+
+@section Scripts {
+<script>
+    (() => {
+        const button = document.getElementById('copy-compose');
+        const compose = document.getElementById('secondary-compose');
+        if (!button || !compose) return;
+        button.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(compose.value);
+                button.textContent = 'Kopiert';
+            } catch {
+                compose.select();
+                document.execCommand('copy');
+                button.textContent = 'Kopiert';
+            }
+            window.setTimeout(() => button.textContent = 'Compose kopieren', 1800);
+        });
+    })();
+</script>
+}

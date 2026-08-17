@@ -59,6 +59,41 @@ public sealed class PersistentStoreConcurrencyTests
     }
 
     [Fact]
+    public void SecondaryInstanceToken_IsProtectedAtRestAndCanBeRecoveredForCompose()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "matbu-instance-token-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var store = new PersistentStore(new TestHostEnvironment(directory));
+            const string token = "secondary-sensitive-token";
+            store.Update(data =>
+            {
+                data.Instances.Add(new MatBuInstance
+                {
+                    Id = 2,
+                    Name = "Remote",
+                    Role = InstanceRole.Secondary,
+                    Endpoint = "https://backup.example.de",
+                    CreateDate = DateTimeOffset.UtcNow,
+                    UpdateDate = DateTimeOffset.UtcNow
+                });
+                store.SetInstanceToken(data, 2, token);
+            });
+
+            var stored = store.Read().Instances.Single(instance => instance.Id == 2).ProtectedToken;
+            Assert.NotEqual(token, stored);
+            Assert.DoesNotContain(token, stored);
+            Assert.Equal(token, store.GetInstanceToken(2));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentFirstStartSeedsDatabaseOnlyOnce()
     {
         var directory = Path.Combine(Path.GetTempPath(), "matbu-tests-" + Guid.NewGuid().ToString("N"));

@@ -5,7 +5,7 @@
 
 <div class="page-heading">
     <div><p class="eyebrow">Gateway</p><h1>Instanzen</h1><p>Primary und firewallfreundlich verbundene Secondary-Instanzen verwalten.</p></div>
-    @if (Model.CanEdit) { <a class="button primary" asp-page="/Instances/Edit">＋ Instanz erstellen</a> }
+    @if (Model.CanEdit) { <a class="button primary" asp-page="/Instances/Edit">＋ Secondary erstellen</a> }
 </div>
 
 <form method="get" class="toolbar compact-toolbar">
@@ -34,6 +34,10 @@
                     @if (Model.CanEdit)
                     {
                         <div class="row-actions">
+                            @if (item.Role == InstanceRole.Secondary)
+                            {
+                                <a class="icon-action" asp-page="/Instances/Setup" asp-route-id="@item.Id" title="Setup und Compose" aria-label="@item.Name einrichten"><svg class="ui-icon"><use href="#icon-terminal"></use></svg></a>
+                            }
                             <a class="icon-action" asp-page="/Instances/Edit" asp-route-id="@item.Id" title="Bearbeiten" aria-label="@item.Name bearbeiten"><svg class="ui-icon"><use href="#icon-pencil"></use></svg></a>
                             @if (item.Id != 1)
                             {

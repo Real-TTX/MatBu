@@ -32,11 +32,13 @@ Der Release-Stack bindet Port 9293 standardmäßig nur an `127.0.0.1`. Für Zugr
 
 ## Production-Secondary in einem entfernten Netzwerk
 
-Auf der Primary zuerst unter **Instanzen** eine Secondary anlegen. Dabei dieselbe öffentliche Primary-Adresse und dasselbe zufällige Instance-Token verwenden, die anschließend in `docker-compose.remote-secondary.yml` eingetragen werden. Nur `MATBU_PRIMARY_ENDPOINT` und `MATBU_INSTANCE_TOKEN` müssen ersetzt werden. Das Compose lädt `ghcr.io/real-ttx/matbu:latest`; Quellcode, lokaler Build und `.env`-Datei sind auf dem entfernten Host nicht erforderlich. Danach startet ein einziger Befehl die Secondary:
+Auf der Primary unter **Instanzen → Secondary erstellen** nur Name und die von außen erreichbare Primary-Adresse eintragen. MatBu erzeugt das Instance-Token automatisch, speichert es verschlüsselt und zeigt anschließend ein vollständig ausgefülltes Production-Compose an. Dieses über **Compose herunterladen** als `docker-compose.yml` auf den entfernten Host übertragen und dort starten:
 
 ```bash
-docker compose -f docker-compose.remote-secondary.yml up -d
+docker compose up -d
 ```
+
+Das Compose lädt `ghcr.io/real-ttx/matbu:latest`; Quellcode, lokaler Build, `.env`-Datei und manuell erzeugte Tokens sind nicht erforderlich. `docker-compose.remote-secondary.yml` bleibt als manuell ausfüllbare Vorlage verfügbar. Das Token kann in der Primary auf der Setup-Seite bewusst erneuert werden; das bisherige Compose wird dadurch sofort ungültig.
 
 Der GitHub-Workflow `.github/workflows/container.yml` veröffentlicht `:dev` vom Branch `dev` und `:latest` vom Branch `main`. Das GHCR-Package muss nach dem ersten Lauf einmalig öffentlich geschaltet werden, damit entfernte Hosts es ohne `docker login` laden können.
 

@@ -1,15 +1,44 @@
 @page
 @model MatBu.Pages.Instances.EditModel
-@{ ViewData["Title"] = Model.Id is null ? "Instanz erstellen" : "Instanz bearbeiten"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
-<div class="page-heading"><div><p class="eyebrow">Gateway</p><h1>@ViewData["Title"]</h1><p>Verwalte die ausgehende Reverse-Verbindung einer Secondary-Instanz.</p></div></div>
+@{ ViewData["Title"] = Model.Id is null ? "Secondary erstellen" : Model.IsPrimary ? "Primary bearbeiten" : "Secondary bearbeiten"; ViewData["UserName"] = Model.CurrentUser?.UserName; }
+
+<div class="page-heading"><div><p class="eyebrow">Gateway</p><h1>@ViewData["Title"]</h1></div></div>
 <form method="post" class="panel form">
-    @if (Model.Error is not null) { <div class="login-error">@Model.Error</div> }
+    <input type="hidden" asp-for="Id" />
+    <div asp-validation-summary="All" class="validation-summary"></div>
     <div class="form-grid">
-        <div class="field"><label asp-for="Input.Name">Name</label><input asp-for="Input.Name" required /></div>
-        <div class="field"><label asp-for="Input.Role">Rolle</label><select asp-for="Input.Role"><option value="Primary">Primary</option><option value="Secondary">Secondary</option></select></div>
-        <div class="field" style="grid-column:1/-1"><label asp-for="Input.Endpoint">Primary-Endpunkt (Reverse-Verbindung)</label><input asp-for="Input.Endpoint" placeholder="https://primary.example.local:9293" /><small>Die Secondary baut die Verbindung ausgehend zur Primary auf. Auf der Secondary muss kein eingehender Port veröffentlicht werden.</small></div>
-        <div class="field" style="grid-column:1/-1"><label asp-for="InstanceToken">Instance-Token</label><input asp-for="InstanceToken" type="password" autocomplete="new-password" placeholder="leer = unverändert" /><small>Das Token muss auf der Secondary als MATBU_INSTANCE_TOKEN gesetzt sein.</small></div>
-        <div class="field"><label><input asp-for="Input.Enabled" /> Aktiviert</label></div>
+        <div class="field" style="grid-column:1/-1">
+            <label asp-for="Input.Name">Name</label>
+            <input asp-for="Input.Name" required placeholder="Standort B" />
+        </div>
+        @if (Model.IsPrimary)
+        {
+            <div class="field" style="grid-column:1/-1">
+                <label>Rolle</label>
+                <input value="Primary · lokale Installation" readonly />
+                <small>Die lokale Primary wird von MatBu verwaltet. Ihre Rolle kann nicht geändert werden.</small>
+            </div>
+        }
+        else
+        {
+            <div class="field" style="grid-column:1/-1">
+                <label>Rolle</label>
+                <input value="Secondary · ausgehende Verbindung" readonly />
+            </div>
+            <div class="field" style="grid-column:1/-1">
+                <label asp-for="Input.Endpoint">Von der Secondary erreichbare Primary-Adresse</label>
+                <input asp-for="Input.Endpoint" placeholder="https://backup.example.de" required />
+                <small>Im Internet die öffentliche HTTPS-Adresse der Primary verwenden. Die Secondary benötigt keinen eingehenden Port.</small>
+            </div>
+            <div class="field"><label><input asp-for="Input.Enabled" /> Aktiviert</label></div>
+        }
     </div>
-    <div class="form-actions"><button class="button primary" type="submit">Speichern</button><a class="button" asp-page="/Instances/Index">Zurück</a></div>
+    <div class="form-actions button-row">
+        <button class="button primary" type="submit">Speichern</button>
+        <a class="button" asp-page="/Instances/Index">Zurück</a>
+        @if (Model.Id is not null && !Model.IsPrimary)
+        {
+            <a class="button" asp-page="/Instances/Setup" asp-route-id="@Model.Id">Setup &amp; Compose</a>
+        }
+    </div>
 </form>
