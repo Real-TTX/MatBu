@@ -6,6 +6,14 @@ Full-Archive erhalten eine SHA-256-Prüfsumme, die im Job gespeichert und bei Ga
 
 ## Starten
 
+Die einfachste Production-Installation besteht aus einem Container für Oberfläche, Scheduler und Transfer-Worker:
+
+```bash
+docker compose -f docker-compose.production.yml up -d
+```
+
+Sie lädt `ghcr.io/real-ttx/matbu:latest`, veröffentlicht Port 9293 und speichert alle MatBu-Daten im Volume `matbu_matbu-data`. Für größere Installationen bleibt `docker-compose.release.yml` mit getrenntem Web-/Scheduler- und Worker-Container verfügbar.
+
 ```powershell
 docker compose build
 docker compose up -d

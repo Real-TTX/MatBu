@@ -6,7 +6,8 @@ public sealed class ConsistencyRecoveryWorker(DockerConsistencyService consisten
     {
         var isSecondary = string.Equals(Environment.GetEnvironmentVariable("MATBU_INSTANCE_ROLE"), "Secondary", StringComparison.OrdinalIgnoreCase);
         var isTransferWorker = string.Equals(Environment.GetEnvironmentVariable("MATBU_DOCKER_WORKER"), "true", StringComparison.OrdinalIgnoreCase);
-        if (!isSecondary && !isTransferWorker) return;
+        var isAllInOne = string.Equals(Environment.GetEnvironmentVariable("MATBU_ALL_IN_ONE"), "true", StringComparison.OrdinalIgnoreCase);
+        if (!isSecondary && !isTransferWorker && !isAllInOne) return;
         try
         {
             await consistency.RecoverPendingAsync(stoppingToken);

@@ -7,7 +7,9 @@ public sealed class DockerVolumeBackupWorker(PersistentStore store, BackupTaskEx
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("MATBU_DOCKER_WORKER"), "true", StringComparison.OrdinalIgnoreCase))
+        var isTransferWorker = string.Equals(Environment.GetEnvironmentVariable("MATBU_DOCKER_WORKER"), "true", StringComparison.OrdinalIgnoreCase);
+        var isAllInOne = string.Equals(Environment.GetEnvironmentVariable("MATBU_ALL_IN_ONE"), "true", StringComparison.OrdinalIgnoreCase);
+        if (!isTransferWorker && !isAllInOne)
         {
             await Task.Delay(Timeout.Infinite, stoppingToken);
             return;
