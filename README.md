@@ -30,9 +30,9 @@ docker compose --env-file .env.production -f docker-compose.release.yml up -d
 
 Der Release-Stack bindet Port 9293 standardmäßig nur an `127.0.0.1`. Für Zugriffe aus anderen Netzen gehört davor ein HTTPS-Reverse-Proxy; die Secondary baut ihre Verbindung ausgehend zu dessen öffentlicher HTTPS-Adresse auf. `MATBU_TRUST_FORWARD_HEADERS=true` darf nur in diesem abgeschirmten Proxy-Aufbau verwendet werden. Wer MatBu bewusst direkt im LAN veröffentlicht, setzt `MATBU_BIND_ADDRESS=0.0.0.0` und `MATBU_TRUST_FORWARD_HEADERS=false`, hat dann aber ohne zusätzlichen TLS-Terminator keine verschlüsselte Webverbindung.
 
-## Secondary in einem entfernten Netzwerk testen
+## Production-Secondary in einem entfernten Netzwerk
 
-Auf der Primary zuerst unter **Instanzen** eine Secondary anlegen und deren Instance-Token kopieren. Dann in `docker-compose.remote-secondary.yml` nur `MATBU_PRIMARY_ENDPOINT` und `MATBU_INSTANCE_TOKEN` direkt ersetzen. Die Compose lädt `ghcr.io/real-ttx/matbu:dev`; Quellcode und lokaler Build sind auf dem entfernten Host nicht erforderlich. Danach startet ein einziger Befehl die Secondary:
+Auf der Primary zuerst unter **Instanzen** eine Secondary anlegen. Dabei dieselbe öffentliche Primary-Adresse und dasselbe zufällige Instance-Token verwenden, die anschließend in `docker-compose.remote-secondary.yml` eingetragen werden. Nur `MATBU_PRIMARY_ENDPOINT` und `MATBU_INSTANCE_TOKEN` müssen ersetzt werden. Das Compose lädt `ghcr.io/real-ttx/matbu:latest`; Quellcode, lokaler Build und `.env`-Datei sind auf dem entfernten Host nicht erforderlich. Danach startet ein einziger Befehl die Secondary:
 
 ```bash
 docker compose -f docker-compose.remote-secondary.yml up -d

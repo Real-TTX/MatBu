@@ -2,11 +2,10 @@ name: matbu-remote-secondary
 
 services:
   secondary:
-    image: ghcr.io/real-ttx/matbu:dev
+    image: ghcr.io/real-ttx/matbu:latest
     pull_policy: always
     restart: unless-stopped
     environment:
-      MATBU_DATA_PATH: /data
       MATBU_INSTANCE_ROLE: Secondary
       MATBU_PRIMARY_ENDPOINT: "https://backup.example.de"
       MATBU_INSTANCE_TOKEN: "HIER-TOKEN-EINTRAGEN"
