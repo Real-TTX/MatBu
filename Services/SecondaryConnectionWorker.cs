@@ -372,6 +372,7 @@ public sealed class SecondaryConnectionWorker(
     {
         var offset = await GetOffsetAsync(client, $"/api/secondary/transfers/{command.TransferId}/source-status", cancellationToken);
         var started = Stopwatch.StartNew();
+        var uploadSpeed = new SpeedWindow();
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -398,9 +399,11 @@ public sealed class SecondaryConnectionWorker(
                 var result = await SendSourceChunkAsync(client, command, jobId, offset, -1, "", false, buffer, cancellationToken);
                 if (!result.Success && result.Offset == offset) throw new IOException(result.Message);
                 offset = result.Offset;
+                transfers.ReportConsumed(command.TransferId, offset);
                 var current = progress();
-                var speed = (long)(offset / Math.Max(0.001, started.Elapsed.TotalSeconds));
+                var speed = uploadSpeed.Sample(offset);
                 var estimatedTotal = current.EstimatedStoredBytes > 0 ? current.EstimatedStoredBytes : Math.Max(offset, current.StoredBytes);
+                var phase = transfers.IsThrottled(command.TransferId) ? JobPhase.ReadPausedSlowTransfer : JobPhase.Transferring;
                 await ProgressAsync(
                     client,
                     command.Id,
@@ -411,7 +414,8 @@ public sealed class SecondaryConnectionWorker(
                     current.SourceBytes,
                     0,
                     current.SpeedBytesPerSecond,
-                    0);
+                    0,
+                    phase);
                 continue;
             }
 
@@ -726,11 +730,12 @@ public sealed class SecondaryConnectionWorker(
         long bytesRead = 0,
         long bytesWritten = 0,
         long readSpeed = 0,
-        long writeSpeed = 0)
+        long writeSpeed = 0,
+        string? phase = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, _primaryEndpoint + $"/api/secondary/commands/{commandId}/progress");
         AddToken(request);
-        request.Content = JsonContent.Create(new SecondaryCommandProgress(bytes, total, speed, "Secondary-Verbindung", bytesRead, bytesWritten, readSpeed, writeSpeed));
+        request.Content = JsonContent.Create(new SecondaryCommandProgress(bytes, total, speed, "Secondary-Verbindung", bytesRead, bytesWritten, readSpeed, writeSpeed, phase));
         using var response = await client.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
     }

@@ -19,8 +19,34 @@ public sealed class GatewayTransferService(
     PersistentStore store,
     ILogger<GatewayTransferService> logger)
 {
+    private const long MiB = 1024L * 1024L;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _transferLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, PipelineRateState> _pipelineRates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, TransferBackpressureGate> _backpressure = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly long BacklogHighWatermark = ResolveWatermark("MATBU_TRANSFER_BACKLOG_HIGH_MIB", 512) * MiB;
+    private static readonly long BacklogLowWatermark = ResolveWatermark("MATBU_TRANSFER_BACKLOG_LOW_MIB", 128) * MiB;
+
+    private static long ResolveWatermark(string variable, long defaultMiB)
+    {
+        var configured = Environment.GetEnvironmentVariable(variable);
+        return long.TryParse(configured, out var value) && value > 0 ? value : defaultMiB;
+    }
+
+    private TransferBackpressureGate Gate(string transferId) =>
+        _backpressure.GetOrAdd(transferId, _ => new TransferBackpressureGate(BacklogHighWatermark, BacklogLowWatermark));
+
+    /// <summary>
+    /// Report how many bytes the transfer consumer (upload/target sync) has drained from the source
+    /// cache file. Used to throttle the producing archive build so the cache cannot outgrow the transfer.
+    /// </summary>
+    public void ReportConsumed(string transferId, long consumedOffset) => Gate(transferId).ReportConsumed(consumedOffset);
+
+    /// <summary>True while the producer is currently held back because the transfer cannot keep up.</summary>
+    public bool IsThrottled(string transferId) => _backpressure.TryGetValue(transferId, out var gate) && gate.IsPaused;
+
+    private void WaitForCapacity(string transferId, long producedBytes, CancellationToken cancellationToken) =>
+        Gate(transferId).WaitForCapacity(producedBytes, cancellationToken);
 
     public Task<string> PrepareSourceArchiveAsync(GatewaySourceRequest request, CancellationToken cancellationToken) =>
         PrepareSourceArchiveAsync(request, new BackupConsistencySettings(BackupConsistencyMode.None, "", "", "", 60), cancellationToken, null);
@@ -51,7 +77,15 @@ public sealed class GatewayTransferService(
             {
                 if (consistency.Mode != BackupConsistencyMode.None)
                     lease = await dockerConsistency.BeginAsync(consistency, cancellationToken);
-                var result = await archiveService.CreateCompressedAsync(source, credential, archivePath, request.Compression, progress, cancellationToken, request.IncludedPaths);
+                var result = await archiveService.CreateCompressedAsync(
+                    source,
+                    credential,
+                    archivePath,
+                    request.Compression,
+                    progress,
+                    cancellationToken,
+                    request.IncludedPaths,
+                    produced => WaitForCapacity(request.TransferId, produced, cancellationToken));
                 var sha256 = await ArchiveIntegrity.ComputeSha256Async(archivePath, cancellationToken);
                 await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes, sha256)), cancellationToken);
                 return archivePath;
@@ -98,6 +132,7 @@ public sealed class GatewayTransferService(
             }
         }
         _pipelineRates.TryRemove(transferId, out _);
+        _backpressure.TryRemove(transferId, out _);
         if (reclaimed > 0)
             logger.LogInformation("Removed {Bytes} bytes of completed source cache for transfer {TransferId}", reclaimed, transferId);
         return reclaimed;
@@ -445,18 +480,20 @@ public sealed class GatewayTransferService(
     private void UpdatePipelineJob(long jobId, string transferId, long transferred, long written, long total, string checkpoint)
     {
         if (jobId <= 0) return;
-        var rate = _pipelineRates.GetOrAdd(transferId, _ => new PipelineRateState(DateTimeOffset.UtcNow));
-        var elapsed = Math.Max(0.001, (DateTimeOffset.UtcNow - rate.Started).TotalSeconds);
+        var rate = _pipelineRates.GetOrAdd(transferId, _ => new PipelineRateState());
+        var transferSpeed = rate.Transfer.Sample(transferred);
+        var writeSpeed = rate.Write.Sample(written);
         store.Update(data =>
         {
             var job = data.TransferJobs.FirstOrDefault(item => item.Id == jobId);
             if (job is null) return;
             job.State = "Running";
+            job.Phase = written < transferred ? JobPhase.Writing : JobPhase.Transferring;
             job.BytesTransferred = transferred;
             job.BytesWritten = written;
             if (total > 0) job.TotalBytes = total;
-            job.SpeedBytesPerSecond = (long)(transferred / elapsed);
-            job.WriteSpeedBytesPerSecond = (long)(written / elapsed);
+            job.SpeedBytesPerSecond = transferSpeed;
+            job.WriteSpeedBytesPerSecond = writeSpeed;
             job.CheckpointPath = checkpoint;
             job.UpdateDate = DateTimeOffset.UtcNow;
         });
@@ -486,7 +523,12 @@ public sealed class GatewayTransferService(
     private static string ArchiveExtension(BackupCompression compression) => compression == BackupCompression.None ? ".tar" : ".tar.br";
 
     private sealed record StreamingPrimaryTarget(BackupObject Object, (string Username, string Password)? Credential, string FileName, string Destination);
-    private sealed record PipelineRateState(DateTimeOffset Started);
+
+    private sealed class PipelineRateState
+    {
+        public SpeedWindow Transfer { get; } = new();
+        public SpeedWindow Write { get; } = new();
+    }
 
     private static void EnsureTransferId(string transferId)
     {

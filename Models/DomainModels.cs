@@ -83,6 +83,7 @@ public sealed class TransferJob
     public string TransferId { get; set; } = "";
     public int Attempt { get; set; } = 1;
     public string State { get; set; } = "Running";
+    public string Phase { get; set; } = "";
     public long BytesRead { get; set; }
     public long BytesTransferred { get; set; }
     public long BytesWritten { get; set; }
@@ -96,6 +97,7 @@ public sealed class TransferJob
     public string ConsistencyContainerNames { get; set; } = "";
     public int ConsistencyTimeoutSeconds { get; set; } = 60;
     public long EstimatedStoredBytes { get; set; }
+    public long EstimatedSourceBytes { get; set; }
     public string SourceSelectionJson { get; set; } = "[]";
     public long SnapshotId { get; set; }
     public long SourceBytes { get; set; }

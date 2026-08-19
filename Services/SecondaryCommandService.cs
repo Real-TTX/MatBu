@@ -13,7 +13,8 @@ public sealed record SecondaryCommandProgress(
     long BytesRead = 0,
     long BytesWritten = 0,
     long ReadSpeedBytesPerSecond = 0,
-    long WriteSpeedBytesPerSecond = 0);
+    long WriteSpeedBytesPerSecond = 0,
+    string? Phase = null);
 
 public sealed class SecondaryCommandService(PersistentStore store)
 {
@@ -160,6 +161,7 @@ public sealed class SecondaryCommandService(PersistentStore store)
                 job.SpeedBytesPerSecond = progress.SpeedBytesPerSecond;
                 if (progress.WriteSpeedBytesPerSecond > 0 || progress.BytesWritten > 0)
                     job.WriteSpeedBytesPerSecond = progress.WriteSpeedBytesPerSecond;
+                if (!string.IsNullOrEmpty(progress.Phase)) job.Phase = progress.Phase;
                 job.CheckpointPath = progress.Checkpoint ?? job.CheckpointPath;
                 job.UpdateDate = DateTimeOffset.UtcNow;
             }

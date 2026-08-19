@@ -45,7 +45,7 @@
                 <td data-job-state>
                     <div class="cell-stack">
                         <div class="cell-status"><span class="status @StatusClass(item.State)">@item.State</span><strong data-job-progress data-job-progress-mode="compact">@progress%</strong></div>
-                        <div class="compact-progress"><div class="job-progress"><div data-job-bar style="width:@progress%"></div></div><small class="cell-meta" data-job-pipeline>Gelesen @Model.FormatBytes(item.BytesRead) · übertragen @Model.FormatBytes(item.BytesTransferred) · geschrieben @Model.FormatBytes(item.BytesWritten)</small><small class="compact-live-meta"><span data-job-speed>@FormatSpeed(item.SpeedBytesPerSecond)</span><span data-job-remaining>@FormatRemaining(item.State, completedBytes, item.TotalBytes, item.SpeedBytesPerSecond)</span></small></div>
+                        <div class="compact-progress"><div class="job-progress"><div data-job-bar style="width:@progress%"></div></div><small class="cell-meta" data-job-pipeline>Gelesen @Model.FormatBytes(item.BytesRead) · übertragen @Model.FormatBytes(item.BytesTransferred) · geschrieben @Model.FormatBytes(item.BytesWritten)</small><small class="compact-live-meta"><span data-job-speed>@FormatSpeed(item.SpeedBytesPerSecond)</span><span data-job-remaining>@FormatRemaining(item.State, completedBytes, item.TotalBytes, item.SpeedBytesPerSecond)</span></small>@if (item.State is "Running" or "Queued" && !string.IsNullOrWhiteSpace(item.Phase)) { <small class="phase-inline" data-job-phase>@item.Phase</small> } else { <small class="phase-inline" data-job-phase hidden></small> }</div>
                     </div>
                 </td>
                 <td>

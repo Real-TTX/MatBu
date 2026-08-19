@@ -20,6 +20,7 @@ public class DetailsModel(PersistentStore store) : AppPageModel(store)
     public string TargetKind { get; private set; } = "";
     public string TargetLocation { get; private set; } = "";
     public string TargetInstanceName { get; private set; } = "";
+    public bool IsCrossInstance { get; private set; }
     public string ActualDestination { get; private set; } = "—";
     public string MethodName => BackupMethodPolicy.Label(Job.Method);
     public string SnapshotLabel
@@ -61,6 +62,7 @@ public class DetailsModel(PersistentStore store) : AppPageModel(store)
         TargetKind = ValueOr(job.TargetObjectKind, target?.Kind.ToString(), "—");
         TargetLocation = ValueOr(job.TargetLocation, target?.Location, "—");
         TargetInstanceName = ValueOr(job.TargetInstanceName, data.Instances.FirstOrDefault(item => item.Id == targetInstanceId)?.Name, "Unbekannte Instanz");
+        IsCrossInstance = sourceInstanceId > 0 && targetInstanceId > 0 && sourceInstanceId != targetInstanceId;
         ActualDestination = !string.IsNullOrWhiteSpace(job.ResolvedDestination)
             ? job.ResolvedDestination
             : job.State == "Completed" && !string.IsNullOrWhiteSpace(job.CheckpointPath) ? job.CheckpointPath : "Noch nicht geschrieben";

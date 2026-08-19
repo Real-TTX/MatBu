@@ -62,63 +62,99 @@
     <div class="test-result"><strong>Version durch Retention entfernt</strong><span>Das Ausführungsprotokoll bleibt erhalten, die Sicherungsdaten dieser Version sind nicht mehr wiederherstellbar.</span></div>
 }
 
-<div class="stats job-stats">
-    <div class="stat"><span class="stat-label">Status</span><div class="stat-value compact-value">@Model.Job.State</div></div>
-    <div class="stat"><span class="stat-label">Gesamtfortschritt</span><div class="stat-value compact-value">@progress%</div><span class="stat-note">langsamste Pipeline-Stufe</span></div>
-    <div class="stat"><span class="stat-label">Gelesen</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.BytesRead)</div><span class="stat-note">@FormatSpeed(Model.Job.ReadSpeedBytesPerSecond)</span></div>
-    <div class="stat"><span class="stat-label">Übertragen</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.BytesTransferred)</div><span class="stat-note">@FormatSpeed(Model.Job.SpeedBytesPerSecond)</span></div>
-    <div class="stat"><span class="stat-label">Geschrieben</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.BytesWritten)</div><span class="stat-note">@FormatSpeed(Model.Job.WriteSpeedBytesPerSecond)</span></div>
-    <div class="stat"><span class="stat-label">Aktualisiert</span><div class="stat-value compact-value">@Model.Job.UpdateDate.ToLocalTime().ToString("dd.MM. HH:mm:ss")</div></div>
+@{
+    var isActive = Model.Job.State is "Running" or "Queued";
+    var stateClass = Model.Job.State is "Failed" or "Fehler" ? "offline" : isActive ? "warning" : "";
+    var phaseText = string.IsNullOrWhiteSpace(Model.Job.Phase) ? Model.Job.State : Model.Job.Phase;
+    var readPercent = Pct(Model.Job.BytesRead, Model.Job.EstimatedSourceBytes);
+    var transferPercent = Pct(Model.Job.BytesTransferred, Model.Job.EstimatedStoredBytes);
+    var writePercent = Pct(Model.Job.BytesWritten, Model.Job.EstimatedStoredBytes);
+}
+
+<div class="panel job-live @(isActive ? "is-active" : "")" data-job-id="@Model.Job.Id" data-job-cross="@(Model.IsCrossInstance ? "1" : "0")">
+    <div class="job-live-head">
+        <span class="status @stateClass" data-job-state>@Model.Job.State</span>
+        <span class="phase-badge" data-job-phase>@phaseText</span>
+        <span class="job-live-updated">Aktualisiert <time data-job-updated>@Model.Job.UpdateDate.ToLocalTime().ToString("HH:mm:ss")</time></span>
+    </div>
+
+    <div class="overall-progress">
+        <div class="overall-progress-top">
+            <div><span class="overall-label">Gesamtfortschritt</span> <strong data-job-overall-percent>@progress%</strong></div>
+            <div class="overall-metrics">
+                <span data-job-overall-speed>—</span>
+                <span class="overall-eta" data-job-remaining>—</span>
+            </div>
+        </div>
+        <div class="progress-track large"><div class="progress-fill" data-job-overall-bar style="width:@progress%"></div></div>
+        <div class="overall-progress-foot"><span data-job-overall-bytes>@Model.FormatBytes(Model.Job.BytesWritten) / @Model.FormatBytes(Model.Job.EstimatedStoredBytes)</span><span>Ø aus geschriebenen Bytes seit Start</span></div>
+    </div>
+
+    <div class="pipeline-stages">
+        <div class="pipeline-stage stage-read">
+            <div class="pipeline-stage-head"><span class="stage-name">① Lesen &amp; Komprimieren</span><span class="stage-percent" data-stage-read-percent>@readPercent%</span></div>
+            <div class="progress-track"><div class="progress-fill" data-stage-read-bar style="width:@readPercent%"></div></div>
+            <div class="pipeline-stage-foot"><span data-stage-read-bytes>@Model.FormatBytes(Model.Job.BytesRead) / @Model.FormatBytes(Model.Job.EstimatedSourceBytes)</span><span class="stage-speed" data-stage-read-speed>@FormatSpeed(Model.Job.ReadSpeedBytesPerSecond)</span></div>
+        </div>
+
+        <div class="pipeline-stage stage-transfer" data-stage-transfer @(Model.IsCrossInstance ? "" : "hidden")>
+            <div class="pipeline-stage-head"><span class="stage-name">② Überträgt</span><span class="stage-percent" data-stage-transfer-percent>@transferPercent%</span></div>
+            <div class="progress-track"><div class="progress-fill" data-stage-transfer-bar style="width:@transferPercent%"></div></div>
+            <div class="pipeline-stage-foot"><span data-stage-transfer-bytes>@Model.FormatBytes(Model.Job.BytesTransferred) / @Model.FormatBytes(Model.Job.EstimatedStoredBytes)</span><span class="stage-speed" data-stage-transfer-speed>@FormatSpeed(Model.Job.SpeedBytesPerSecond)</span></div>
+        </div>
+
+        <div class="pipeline-stage stage-write">
+            <div class="pipeline-stage-head"><span class="stage-name">@(Model.IsCrossInstance ? "③" : "②") Schreibt Ziel</span><span class="stage-percent" data-stage-write-percent>@writePercent%</span></div>
+            <div class="progress-track"><div class="progress-fill" data-stage-write-bar style="width:@writePercent%"></div></div>
+            <div class="pipeline-stage-foot"><span data-stage-write-bytes>@Model.FormatBytes(Model.Job.BytesWritten) / @Model.FormatBytes(Model.Job.EstimatedStoredBytes)</span><span class="stage-speed" data-stage-write-speed>@FormatSpeed(Model.Job.WriteSpeedBytesPerSecond)</span></div>
+        </div>
+    </div>
 </div>
 
 <div class="stats job-stats">
     <div class="stat"><span class="stat-label">Methode</span><div class="stat-value compact-value">@Model.MethodName</div></div>
     <div class="stat"><span class="stat-label">Snapshot-ID</span><div class="stat-value compact-value">@Model.SnapshotLabel</div></div>
-    <div class="stat"><span class="stat-label">Quelldaten</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.SourceBytes)</div></div>
-    <div class="stat"><span class="stat-label">Gespeichert</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.StoredBytes)</div></div>
+    <div class="stat"><span class="stat-label">Quelldaten</span><div class="stat-value compact-value" data-job-source>@Model.FormatBytes(Model.Job.SourceBytes)</div></div>
+    <div class="stat"><span class="stat-label">Gespeichert</span><div class="stat-value compact-value" data-job-stored>@Model.FormatBytes(Model.Job.StoredBytes)</div></div>
     <div class="stat"><span class="stat-label">Kompression</span><div class="stat-value compact-value">@CompressionName(Model.Job.Compression)</div><span class="stat-note">@(Model.Job.SourceBytes > 0 ? $"{Model.Job.StoredBytes * 100d / Model.Job.SourceBytes:0.0}% der Quelldaten" : "Keine Messdaten")</span></div>
-    <div class="stat"><span class="stat-label">Geschätzte Endgröße</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.EstimatedStoredBytes)</div></div>
+    <div class="stat"><span class="stat-label">Geschätzte Endgröße</span><div class="stat-value compact-value" data-job-estimated>@Model.FormatBytes(Model.Job.EstimatedStoredBytes)</div></div>
     <div class="stat"><span class="stat-label">Wiederverwendet</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.ReusedBytes)</div></div>
     <div class="stat"><span class="stat-label">Effizienzquote</span><div class="stat-value compact-value">@Model.Efficiency</div><span class="stat-note">Anteil wiederverwendeter Quelldaten</span></div>
 </div>
 
-@if (!string.IsNullOrWhiteSpace(Model.Job.Error))
-{
-    <div class="test-result error"><strong>Fehler</strong><span>@Model.Job.Error</span></div>
-}
+<div class="test-result error" data-job-error-panel @(string.IsNullOrWhiteSpace(Model.Job.Error) ? "hidden" : "")><strong>Fehler</strong><span data-job-error>@Model.Job.Error</span></div>
 
 <div class="panel job-log-panel">
-    <div class="panel-heading"><h2>Ablaufprotokoll</h2><span>@Model.Steps.Count Schritte</span></div>
-    @if (Model.Steps.Count == 0)
+    <div class="panel-heading"><h2>Ablaufprotokoll</h2><span><span data-step-count>@Model.Steps.Count</span> Schritte</span></div>
+    <div class="empty" data-timeline-empty @(Model.Steps.Count == 0 ? "" : "hidden")>Noch kein Schrittprotokoll vorhanden.</div>
+    <ol class="job-timeline" data-job-timeline @(Model.Steps.Count == 0 ? "hidden" : "")>
+    @foreach (var step in Model.Steps)
     {
-        <div class="empty">Für diese ältere Ausführung existiert noch kein Schrittprotokoll.</div>
-    }
-    else
-    {
-        <ol class="job-timeline">
-        @foreach (var step in Model.Steps)
-        {
-            <li id="step-@step.Id" class="@step.State.ToLowerInvariant()">
-                <div class="timeline-marker"></div>
-                <div class="timeline-content">
-                    <div class="timeline-heading">
-                        <div><span class="status @StepStatusClass(step.State)">@step.Stage</span><strong>@step.State</strong></div>
-                        <time>@step.CreateDate.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</time>
-                    </div>
-                    <p>@step.Message</p>
-                    <div class="timeline-meta">
-                        @if (!string.IsNullOrWhiteSpace(step.InstanceName)) { <span>⇄ @step.InstanceName</span> }
-                        @if (!string.IsNullOrWhiteSpace(step.Location)) { <code>@step.Location</code> }
-                        @if (step.TotalBytes > 0) { <span>@step.BytesTransferred / @step.TotalBytes Bytes</span> }
-                    </div>
+        <li id="step-@step.Id" class="@step.State.ToLowerInvariant()" data-step-id="@step.Id">
+            <div class="timeline-marker"></div>
+            <div class="timeline-content">
+                <div class="timeline-heading">
+                    <div><span class="status @StepStatusClass(step.State)">@step.Stage</span><strong>@step.State</strong></div>
+                    <time>@step.CreateDate.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</time>
                 </div>
-            </li>
-        }
-        </ol>
+                <p>@step.Message</p>
+                <div class="timeline-meta">
+                    @if (!string.IsNullOrWhiteSpace(step.InstanceName)) { <span>⇄ @step.InstanceName</span> }
+                    @if (!string.IsNullOrWhiteSpace(step.Location)) { <code>@step.Location</code> }
+                    @if (step.TotalBytes > 0) { <span>@step.BytesTransferred / @step.TotalBytes Bytes</span> }
+                </div>
+            </div>
+        </li>
     }
+    </ol>
 </div>
 
+@section Scripts {
+    <script src="~/job-detail-live.js" asp-append-version="true"></script>
+}
+
 @functions {
+    static int Pct(long value, long total) => total <= 0 ? 0 : (int)Math.Clamp(value * 100 / total, 0, 100);
     string FormatSpeed(long value) => value <= 0 ? "—" : value >= 1024 * 1024 ? $"{value / 1024d / 1024d:0.0} MB/s" : $"{value / 1024d:0.0} KB/s";
     string CompressionName(MatBu.Models.BackupCompression value) => value switch { MatBu.Models.BackupCompression.Fast => "Brotli schnell", MatBu.Models.BackupCompression.Balanced => "Brotli ausgewogen", MatBu.Models.BackupCompression.Maximum => "Brotli maximal", _ => "Unkomprimiert" };
     string ConsistencyName(MatBu.Models.BackupConsistencyMode value) => value switch { MatBu.Models.BackupConsistencyMode.DockerPause => "Docker Pause", MatBu.Models.BackupConsistencyMode.DockerExec => "Docker Pre-/Post-Hook", _ => "Crash-konsistent" };

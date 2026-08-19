@@ -114,6 +114,7 @@ public sealed class BackupTaskExecutor(
             }
 
             var totalBytes = await EnsureSourceArchiveAsync(task, source, sourceInstance, job, cachePath, partialPath, cancellationToken);
+            MarkPhase(job.Id, JobPhase.Integrity);
             var archiveSha256 = await ArchiveIntegrity.ComputeSha256Async(cachePath, cancellationToken);
             MarkArchiveIntegrity(job.Id, archiveSha256);
             AppendStep(job.Id, "Integrität", "Completed", $"Quellarchiv mit SHA-256 {archiveSha256} verifiziert.", "Primary", cachePath, totalBytes, totalBytes);
@@ -660,6 +661,7 @@ public sealed class BackupTaskExecutor(
         {
             var job = data.TransferJobs.First(item => item.Id == jobId);
             job.State = "Completed";
+            job.Phase = JobPhase.Completed;
             job.BytesRead = read;
             job.BytesTransferred = transferred;
             job.BytesWritten = transferred;
@@ -952,6 +954,7 @@ public sealed class BackupTaskExecutor(
 
         var settings = BackupConsistencySettings.FromTask(task);
         AppendStep(job.Id, "Konsistenz", "Started", $"{ConsistencyLabel(task.ConsistencyMode)} wird vor der Quellaufnahme aktiviert.", sourceInstance.Name, task.ConsistencyContainerNames);
+        MarkPhase(job.Id, JobPhase.ConsistencyPause);
         var lease = await dockerConsistency.BeginAsync(settings, cancellationToken);
         AppendStep(job.Id, "Konsistenz", "Active", "Anwendung ist für die konsistente Quellaufnahme vorbereitet.", sourceInstance.Name, task.ConsistencyContainerNames);
         try { return await CreateAsync(); }
@@ -1037,12 +1040,47 @@ public sealed class BackupTaskExecutor(
             var job = data.TransferJobs.FirstOrDefault(current => current.Id == jobId);
             if (job is null) return;
             job.State = state;
+            job.Phase = state switch
+            {
+                "Completed" => JobPhase.Completed,
+                "Fehler" or "Failed" => JobPhase.Failed,
+                _ => job.Phase
+            };
             job.BytesTransferred = bytes;
             if (total is not null) job.TotalBytes = total.Value;
             job.CheckpointPath = checkpoint;
             job.Error = error ?? job.Error;
             if (speed is not null) job.SpeedBytesPerSecond = speed.Value;
             if (!string.IsNullOrWhiteSpace(resolvedDestination)) job.ResolvedDestination = resolvedDestination;
+            job.UpdateDate = DateTimeOffset.UtcNow;
+        });
+    }
+
+    private void MarkWriteProgress(long jobId, long written, long total, string checkpoint, long speed)
+    {
+        store.Update(data =>
+        {
+            var job = data.TransferJobs.FirstOrDefault(current => current.Id == jobId);
+            if (job is null) return;
+            job.State = "Running";
+            job.Phase = JobPhase.Writing;
+            job.BytesTransferred = written;
+            if (total > 0) job.TotalBytes = total;
+            job.BytesWritten = written;
+            job.WriteSpeedBytesPerSecond = speed;
+            job.SpeedBytesPerSecond = speed;
+            job.CheckpointPath = checkpoint;
+            job.UpdateDate = DateTimeOffset.UtcNow;
+        });
+    }
+
+    private void MarkPhase(long jobId, string phase)
+    {
+        store.Update(data =>
+        {
+            var job = data.TransferJobs.FirstOrDefault(current => current.Id == jobId);
+            if (job is null) return;
+            job.Phase = phase;
             job.UpdateDate = DateTimeOffset.UtcNow;
         });
     }
@@ -1054,8 +1092,12 @@ public sealed class BackupTaskExecutor(
             var job = data.TransferJobs.FirstOrDefault(current => current.Id == jobId);
             if (job is null) return;
             job.State = "Running";
+            if (job.Phase != JobPhase.ReadPausedSlowTransfer) job.Phase = JobPhase.Reading;
             job.BytesTransferred = progress.SourceBytes;
             job.TotalBytes = progress.EstimatedSourceBytes;
+            job.BytesRead = progress.SourceBytes;
+            job.ReadSpeedBytesPerSecond = progress.SpeedBytesPerSecond;
+            job.EstimatedSourceBytes = progress.EstimatedSourceBytes;
             job.SourceBytes = progress.SourceBytes;
             job.StoredBytes = progress.StoredBytes;
             job.EstimatedStoredBytes = progress.EstimatedStoredBytes;
@@ -1173,13 +1215,13 @@ public sealed class BackupTaskExecutor(
         {
             input.Position = offset;
             var buffer = new byte[4 * 1024 * 1024];
+            var window = new SpeedWindow();
             int read;
             while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
             {
                 await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
                 offset += read;
-                var speed = (long)(offset / Math.Max(.001, started.Elapsed.TotalSeconds));
-                MarkJob(jobId, "Running", offset, totalBytes, partialPath, speed: speed);
+                MarkWriteProgress(jobId, offset, totalBytes, partialPath, window.Sample(offset));
             }
             await output.FlushAsync(cancellationToken);
         }

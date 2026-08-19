@@ -39,7 +39,8 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         BackupCompression compression,
         Action<ArchiveProgress>? progress,
         CancellationToken cancellationToken,
-        IReadOnlyList<string>? includedPaths = null)
+        IReadOnlyList<string>? includedPaths = null,
+        Action<long>? throttle = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         var selection = SourceSelection.Normalize(includedPaths ?? []);
@@ -89,12 +90,17 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
             }
             nextFreeSpaceCheck = nextLength + FreeSpaceCheckInterval;
         }
+        void BeforeStoredWrite(int pendingBytes)
+        {
+            GuardFreeSpace(pendingBytes);
+            throttle?.Invoke((storedCounter?.BytesWritten ?? 0) + pendingBytes);
+        }
         try
         {
             if (File.Exists(temporaryBuilding)) File.Delete(temporaryBuilding);
             GuardFreeSpace(0);
             await using var file = new FileStream(temporaryBuilding, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            storedCounter = new CountingWriteStream(file, () => Report(), GuardFreeSpace);
+            storedCounter = new CountingWriteStream(file, () => Report(), BeforeStoredWrite);
             await using var compressor = CreateCompressionStream(storedCounter, compression);
             sourceCounter = new CountingWriteStream(compressor, () => Report());
 

@@ -48,6 +48,18 @@
         const active = job.state === 'Running' || job.state === 'Queued';
         state.className = `status ${failed ? 'offline' : active ? 'warning' : ''}`;
       }
+      const phase = row.querySelector('[data-job-phase]');
+      if (phase) {
+        const active = job.state === 'Running' || job.state === 'Queued';
+        const label = job.phase && job.phase.trim() ? job.phase : '';
+        if (active && label) {
+          phase.textContent = label;
+          phase.hidden = false;
+          phase.classList.toggle('is-paused', label.includes('pausiert'));
+        } else {
+          phase.hidden = true;
+        }
+      }
       const remaining = row.querySelector('[data-job-remaining]');
       if (remaining) remaining.textContent = formatRemaining(job);
       const checkpoint = row.querySelector('[data-job-checkpoint]');
