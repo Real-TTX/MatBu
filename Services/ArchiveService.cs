@@ -12,6 +12,9 @@ public sealed record ArchiveCreationResult(long SourceBytes, long StoredBytes);
 
 public sealed class ArchiveService(IHostEnvironment environment, SmbClientService smbClient, ProxmoxService proxmox, ILogger<ArchiveService> logger)
 {
+    private const long MiB = 1024L * 1024L;
+    private const long GiB = 1024L * MiB;
+    private const long FreeSpaceCheckInterval = 64L * MiB;
     private readonly string _dataPath = Environment.GetEnvironmentVariable("MATBU_DATA_PATH") ?? Path.Combine(environment.ContentRootPath, "data");
 
     public string CacheDirectory
@@ -46,6 +49,7 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         var stopwatch = Stopwatch.StartNew();
         long lastBytes = 0;
         long lastTicks = 0;
+        long nextFreeSpaceCheck = 0;
         CountingWriteStream? storedCounter = null;
         CountingWriteStream? sourceCounter = null;
         void Report(bool force = false)
@@ -70,11 +74,27 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
                                 source.Kind == ObjectKind.LocalFolder && IsPathWithin(source.Location, building)
                 ? Path.Combine(Path.GetTempPath(), $"matbu-archive-{Guid.NewGuid():N}.tar.building")
                 : building;
+        var spoolDrive = ResolveDrive(temporaryBuilding);
+        var minimumFreeSpace = ResolveMinimumFreeSpace(spoolDrive);
+        void GuardFreeSpace(int pendingBytes)
+        {
+            var nextLength = (storedCounter?.BytesWritten ?? 0) + pendingBytes;
+            if (nextLength < nextFreeSpaceCheck) return;
+            spoolDrive = ResolveDrive(temporaryBuilding);
+            if (spoolDrive.AvailableFreeSpace <= minimumFreeSpace + pendingBytes)
+            {
+                throw new IOException(
+                    $"Transfer kontrolliert abgebrochen: Auf '{spoolDrive.Name}' sind nur noch {FormatBytes(spoolDrive.AvailableFreeSpace)} frei. " +
+                    $"Die MatBu-Sicherheitsreserve von {FormatBytes(minimumFreeSpace)} wird nicht unterschritten.");
+            }
+            nextFreeSpaceCheck = nextLength + FreeSpaceCheckInterval;
+        }
         try
         {
             if (File.Exists(temporaryBuilding)) File.Delete(temporaryBuilding);
+            GuardFreeSpace(0);
             await using var file = new FileStream(temporaryBuilding, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            storedCounter = new CountingWriteStream(file, () => Report());
+            storedCounter = new CountingWriteStream(file, () => Report(), GuardFreeSpace);
             await using var compressor = CreateCompressionStream(storedCounter, compression);
             sourceCounter = new CountingWriteStream(compressor, () => Report());
 
@@ -329,6 +349,27 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         return fullCandidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static DriveInfo ResolveDrive(string path)
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(path));
+        if (string.IsNullOrWhiteSpace(root)) throw new IOException($"Datentraeger fuer den Transferpfad '{path}' konnte nicht ermittelt werden.");
+        return new DriveInfo(root);
+    }
+
+    private static long ResolveMinimumFreeSpace(DriveInfo drive)
+    {
+        var configured = Environment.GetEnvironmentVariable("MATBU_MIN_FREE_SPACE_GIB");
+        if (double.TryParse(configured, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gib) && gib > 0)
+            return Math.Max(512L * MiB, (long)Math.Ceiling(gib * GiB));
+        return Math.Clamp(drive.TotalSize / 20, 512L * MiB, 5L * GiB);
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes >= GiB) return $"{bytes / (double)GiB:N1} GiB";
+        return $"{bytes / (double)MiB:N0} MiB";
+    }
+
     private static Stream CreateCompressionStream(Stream output, BackupCompression compression) => compression switch
     {
         BackupCompression.None => new PassthroughWriteStream(output),
@@ -382,18 +423,18 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         }
     }
 
-    private sealed class CountingWriteStream(Stream inner, Action changed) : Stream
+    private sealed class CountingWriteStream(Stream inner, Action changed, Action<int>? beforeWrite = null) : Stream
     {
         public long BytesWritten { get; private set; }
         public override bool CanRead => false; public override bool CanSeek => false; public override bool CanWrite => true;
         public override long Length => BytesWritten; public override long Position { get => BytesWritten; set => throw new NotSupportedException(); }
         public override void Flush() => inner.Flush();
         public override Task FlushAsync(CancellationToken cancellationToken) => inner.FlushAsync(cancellationToken);
-        public override void Write(byte[] buffer, int offset, int count) { inner.Write(buffer, offset, count); BytesWritten += count; changed(); }
-        public override void Write(ReadOnlySpan<byte> buffer) { inner.Write(buffer); BytesWritten += buffer.Length; changed(); }
-        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) { await inner.WriteAsync(buffer, cancellationToken); BytesWritten += buffer.Length; changed(); }
+        public override void Write(byte[] buffer, int offset, int count) { beforeWrite?.Invoke(count); inner.Write(buffer, offset, count); BytesWritten += count; changed(); }
+        public override void Write(ReadOnlySpan<byte> buffer) { beforeWrite?.Invoke(buffer.Length); inner.Write(buffer); BytesWritten += buffer.Length; changed(); }
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) { beforeWrite?.Invoke(buffer.Length); await inner.WriteAsync(buffer, cancellationToken); BytesWritten += buffer.Length; changed(); }
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) => WriteLegacyAsync(buffer, offset, count, cancellationToken);
-        private async Task WriteLegacyAsync(byte[] buffer, int offset, int count, CancellationToken token) { await inner.WriteAsync(buffer.AsMemory(offset, count), token); BytesWritten += count; changed(); }
+        private async Task WriteLegacyAsync(byte[] buffer, int offset, int count, CancellationToken token) { beforeWrite?.Invoke(count); await inner.WriteAsync(buffer.AsMemory(offset, count), token); BytesWritten += count; changed(); }
         protected override void Dispose(bool disposing) { if (disposing) inner.Dispose(); base.Dispose(disposing); }
         public override ValueTask DisposeAsync() => inner.DisposeAsync();
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();

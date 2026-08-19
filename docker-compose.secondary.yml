@@ -12,6 +12,13 @@ services:
     volumes:
       - matbu-secondary-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - matbu-primary
 
 volumes:
   matbu-secondary-data:
+
+networks:
+  matbu-primary:
+    external: true
+    name: matbu_default

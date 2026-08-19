@@ -72,6 +72,37 @@ public sealed class GatewayTransferService(
 
     public string SourceBuildingPath(string transferId) => SourceArchivePath(transferId) + ".building";
 
+    public long CleanupSourceArtifacts(string transferId)
+    {
+        EnsureTransferId(transferId);
+        var archive = SourceArchivePath(transferId);
+        var paths = new[]
+        {
+            archive,
+            archive + ".building",
+            archive + ".partial",
+            MetricsPath(transferId)
+        };
+        long reclaimed = 0;
+        foreach (var path in paths)
+        {
+            try
+            {
+                if (!File.Exists(path)) continue;
+                reclaimed += new FileInfo(path).Length;
+                File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Transfer cache artifact {Path} could not be removed", path);
+            }
+        }
+        _pipelineRates.TryRemove(transferId, out _);
+        if (reclaimed > 0)
+            logger.LogInformation("Removed {Bytes} bytes of completed source cache for transfer {TransferId}", reclaimed, transferId);
+        return reclaimed;
+    }
+
     public GatewayStreamStatus GetIncomingSourceStatus(string transferId)
     {
         EnsureTransferId(transferId);

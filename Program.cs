@@ -64,6 +64,7 @@ builder.Services.AddSingleton<RestoreExecutionService>();
 builder.Services.AddSingleton<BackupTaskExecutor>();
 builder.Services.AddSingleton<DockerConsistencyService>();
 builder.Services.AddHostedService<ConsistencyRecoveryWorker>();
+builder.Services.AddHostedService<TransferCacheMaintenanceService>();
 builder.Services.AddSingleton<NotificationSettingsStore>();
 builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddHostedService<NotificationDispatcher>();

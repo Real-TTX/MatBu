@@ -13,6 +13,7 @@ public sealed record SecondaryLocalStreamingResult(GatewayArchiveMetrics Metrics
 public sealed class BackupTaskExecutor(
     PersistentStore store,
     ArchiveService archiveService,
+    GatewayTransferService transfers,
     SmbClientService smbClient,
     SecondaryCommandService commands,
     IncrementalSourceService incrementalSources,
@@ -596,7 +597,7 @@ public sealed class BackupTaskExecutor(
         MarkTask(task.Id, "Gesichert");
         await ApplyRetentionSafelyAsync(task, target, targetInstance, job.Id, cancellationToken);
         AppendStep(job.Id, "Abschluss", "Completed", $"Streaming-Backup erfolgreich. Weg: {route}. Tatsaechliches Ziel: {destination}.", $"{sourceInstance.Name} -> {targetInstance.Name}", destination, total, total);
-        TryDelete(Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar"));
+        transfers.CleanupSourceArtifacts(transferId);
     }
 
     private async Task ExecuteStreamedFullFromSecondaryAsync(
@@ -650,7 +651,7 @@ public sealed class BackupTaskExecutor(
         MarkTask(task.Id, "Gesichert");
         await ApplyRetentionSafelyAsync(task, target, targetInstance, job.Id, cancellationToken);
         AppendStep(job.Id, "Abschluss", "Completed", $"Streaming-Backup erfolgreich. Weg: {route}. Tatsaechliches Ziel: {destination}.", $"{sourceInstance.Name} -> {targetInstance.Name}", destination, total, total);
-        TryDelete(Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar"));
+        transfers.CleanupSourceArtifacts(transferId);
     }
 
     private void CompleteStreamedJob(long jobId, long read, long transferred, string destination, string sha256)

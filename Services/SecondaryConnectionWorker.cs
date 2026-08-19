@@ -114,6 +114,7 @@ public sealed class SecondaryConnectionWorker(
                     await PushGrowingSourceAsync(client, command, preparation, payload.JobId, () => latest, cancellationToken);
                     var metrics = transfers.GetSourceMetrics(command.TransferId);
                     await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(metrics), "", cancellationToken);
+                    transfers.CleanupSourceArtifacts(command.TransferId);
                     break;
                 }
                 case SecondaryCommandKind.ImportTarget:
@@ -137,6 +138,7 @@ public sealed class SecondaryConnectionWorker(
                         ?? throw new InvalidOperationException("Lokales Streaming-Payload fehlt.");
                     var result = await StreamLocalSourceToTargetAsync(client, command, payload, cancellationToken);
                     await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(result), "", cancellationToken);
+                    transfers.CleanupSourceArtifacts(command.TransferId);
                     break;
                 }
                 case SecondaryCommandKind.ExportArchive:
@@ -323,50 +325,40 @@ public sealed class SecondaryConnectionWorker(
         var started = Stopwatch.StartNew();
         long synced = 0;
         GatewayStreamingWriteResult? write = null;
-        try
+        while (true)
         {
-            while (true)
+            cancellationToken.ThrowIfCancellationRequested();
+            var finalPath = transfers.SourceArchivePath(command.TransferId);
+            var buildingPath = transfers.SourceBuildingPath(command.TransferId);
+            var availablePath = File.Exists(finalPath) ? finalPath : buildingPath;
+            var available = TryGetFileLength(availablePath);
+            if (available > synced)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var finalPath = transfers.SourceArchivePath(command.TransferId);
-                var buildingPath = transfers.SourceBuildingPath(command.TransferId);
-                var availablePath = File.Exists(finalPath) ? finalPath : buildingPath;
-                var available = TryGetFileLength(availablePath);
-                if (available > synced)
+                try
                 {
-                    try
-                    {
-                        write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, availablePath, final: false, cancellationToken);
-                    }
-                    catch (FileNotFoundException) when (File.Exists(finalPath))
-                    {
-                        continue;
-                    }
-                    synced = available;
-                    var speed = (long)(synced / Math.Max(0.001, started.Elapsed.TotalSeconds));
-                    var estimate = latest.EstimatedStoredBytes > 0 ? latest.EstimatedStoredBytes : synced;
-                    await ProgressAsync(client, command.Id, synced, estimate, speed, cancellationToken, latest.SourceBytes, write.WrittenBytes, latest.SpeedBytesPerSecond, speed);
+                    write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, availablePath, final: false, cancellationToken);
+                }
+                catch (FileNotFoundException) when (File.Exists(finalPath))
+                {
                     continue;
                 }
-                if (!preparation.IsCompleted)
-                {
-                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
-                    continue;
-                }
+                synced = available;
+                var speed = (long)(synced / Math.Max(0.001, started.Elapsed.TotalSeconds));
+                var estimate = latest.EstimatedStoredBytes > 0 ? latest.EstimatedStoredBytes : synced;
+                await ProgressAsync(client, command.Id, synced, estimate, speed, cancellationToken, latest.SourceBytes, write.WrittenBytes, latest.SpeedBytesPerSecond, speed);
+                continue;
+            }
+            if (!preparation.IsCompleted)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+                continue;
+            }
 
-                var archive = await preparation;
-                var metrics = transfers.GetSourceMetrics(command.TransferId);
-                write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, archive, final: true, cancellationToken);
-                await ProgressAsync(client, command.Id, metrics.StoredBytes, metrics.StoredBytes, 0, cancellationToken, metrics.SourceBytes, write.WrittenBytes, 0, 0);
-                return new SecondaryLocalStreamingResult(metrics, write.Destination);
-            }
-        }
-        finally
-        {
-            if (preparation.IsCompletedSuccessfully)
-            {
-                try { File.Delete(preparation.Result); } catch { }
-            }
+            var archive = await preparation;
+            var metrics = transfers.GetSourceMetrics(command.TransferId);
+            write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, archive, final: true, cancellationToken);
+            await ProgressAsync(client, command.Id, metrics.StoredBytes, metrics.StoredBytes, 0, cancellationToken, metrics.SourceBytes, write.WrittenBytes, 0, 0);
+            return new SecondaryLocalStreamingResult(metrics, write.Destination);
         }
     }
 
