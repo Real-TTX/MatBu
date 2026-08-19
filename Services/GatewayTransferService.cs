@@ -26,11 +26,28 @@ public sealed class GatewayTransferService(
 
     private static readonly long BacklogHighWatermark = ResolveWatermark("MATBU_TRANSFER_BACKLOG_HIGH_MIB", 512) * MiB;
     private static readonly long BacklogLowWatermark = ResolveWatermark("MATBU_TRANSFER_BACKLOG_LOW_MIB", 128) * MiB;
+    private static readonly bool SparseCacheEnabled = Environment.GetEnvironmentVariable("MATBU_TRANSFER_SPARSE_CACHE") != "0";
+    private const long SparseReleaseThreshold = 32L * MiB;
 
     private static long ResolveWatermark(string variable, long defaultMiB)
     {
         var configured = Environment.GetEnvironmentVariable(variable);
         return long.TryParse(configured, out var value) && value > 0 ? value : defaultMiB;
+    }
+
+    /// <summary>
+    /// Deallocate the physical disk blocks of the source cache region the consumer has already uploaded, so
+    /// the secondary keeps only the un-transferred backlog on disk. Punches in aligned batches; returns the
+    /// new high-water mark of released bytes to pass back on the next call. No-op when sparse cache is off.
+    /// </summary>
+    public long ReleaseConsumedSpace(string path, long consumedOffset, long alreadyReleased)
+    {
+        if (!SparseCacheEnabled || consumedOffset - alreadyReleased < SparseReleaseThreshold) return alreadyReleased;
+        var (offset, length) = SparseFile.AlignedRange(alreadyReleased, consumedOffset);
+        if (length <= 0) return alreadyReleased;
+        if (!SparseFile.TryPunchHole(path, offset, length)) return alreadyReleased;
+        logger.LogDebug("Released {Bytes} bytes of transferred source cache up to offset {Offset}", length, offset + length);
+        return offset + length;
     }
 
     private TransferBackpressureGate Gate(string transferId) =>
@@ -66,7 +83,13 @@ public sealed class GatewayTransferService(
         try
         {
             var archivePath = SourceArchivePath(request.TransferId);
-            if (File.Exists(archivePath)) return archivePath;
+            if (File.Exists(archivePath))
+            {
+                // A previously streamed archive may have had consumed regions punched out, so it is no longer
+                // safe to reuse as-is; rebuild it. Without sparse cache the file is intact and can be reused.
+                if (!SparseCacheEnabled) return archivePath;
+                File.Delete(archivePath);
+            }
 
             var buildingPath = SourceBuildingPath(request.TransferId);
             if (File.Exists(buildingPath)) File.Delete(buildingPath);
@@ -86,8 +109,9 @@ public sealed class GatewayTransferService(
                     cancellationToken,
                     request.IncludedPaths,
                     produced => WaitForCapacity(request.TransferId, produced, cancellationToken));
-                var sha256 = await ArchiveIntegrity.ComputeSha256Async(archivePath, cancellationToken);
-                await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes, sha256)), cancellationToken);
+                // SHA-256 is hashed incrementally during the build, not re-read afterwards: the consumer may
+                // already have punched holes into transferred regions, which would corrupt a post-hoc read.
+                await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes, result.Sha256)), cancellationToken);
                 return archivePath;
             }
             finally

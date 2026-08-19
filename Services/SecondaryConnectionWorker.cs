@@ -373,6 +373,7 @@ public sealed class SecondaryConnectionWorker(
         var offset = await GetOffsetAsync(client, $"/api/secondary/transfers/{command.TransferId}/source-status", cancellationToken);
         var started = Stopwatch.StartNew();
         var uploadSpeed = new SpeedWindow();
+        long releasedUpTo = 0;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -400,6 +401,7 @@ public sealed class SecondaryConnectionWorker(
                 if (!result.Success && result.Offset == offset) throw new IOException(result.Message);
                 offset = result.Offset;
                 transfers.ReportConsumed(command.TransferId, offset);
+                releasedUpTo = transfers.ReleaseConsumedSpace(availablePath, offset, releasedUpTo);
                 var current = progress();
                 var speed = uploadSpeed.Sample(offset);
                 var estimatedTotal = current.EstimatedStoredBytes > 0 ? current.EstimatedStoredBytes : Math.Max(offset, current.StoredBytes);

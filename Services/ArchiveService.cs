@@ -2,13 +2,14 @@ using System.Net.Http.Json;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Formats.Tar;
+using System.Security.Cryptography;
 using MatBu.Data;
 using MatBu.Models;
 
 namespace MatBu.Services;
 
 public sealed record ArchiveProgress(long SourceBytes, long StoredBytes, long EstimatedSourceBytes, long EstimatedStoredBytes, long SpeedBytesPerSecond);
-public sealed record ArchiveCreationResult(long SourceBytes, long StoredBytes);
+public sealed record ArchiveCreationResult(long SourceBytes, long StoredBytes, string Sha256 = "");
 
 public sealed class ArchiveService(IHostEnvironment environment, SmbClientService smbClient, ProxmoxService proxmox, ILogger<ArchiveService> logger)
 {
@@ -95,12 +96,13 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
             GuardFreeSpace(pendingBytes);
             throttle?.Invoke((storedCounter?.BytesWritten ?? 0) + pendingBytes);
         }
+        using var storedHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         try
         {
             if (File.Exists(temporaryBuilding)) File.Delete(temporaryBuilding);
             GuardFreeSpace(0);
             await using var file = new FileStream(temporaryBuilding, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            storedCounter = new CountingWriteStream(file, () => Report(), BeforeStoredWrite);
+            storedCounter = new CountingWriteStream(file, () => Report(), BeforeStoredWrite, storedHash);
             await using var compressor = CreateCompressionStream(storedCounter, compression);
             sourceCounter = new CountingWriteStream(compressor, () => Report());
 
@@ -134,8 +136,9 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporaryBuilding, outputPath, overwrite: true);
             var storedBytes = new FileInfo(outputPath).Length;
+            var sha256 = Convert.ToHexString(storedHash.GetHashAndReset()).ToLowerInvariant();
             progress?.Invoke(new ArchiveProgress(sourceBytes, storedBytes, estimatedSourceBytes, storedBytes, 0));
-            return new ArchiveCreationResult(sourceBytes, storedBytes);
+            return new ArchiveCreationResult(sourceBytes, storedBytes, sha256);
         }
         finally
         {
@@ -429,18 +432,18 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         }
     }
 
-    private sealed class CountingWriteStream(Stream inner, Action changed, Action<int>? beforeWrite = null) : Stream
+    private sealed class CountingWriteStream(Stream inner, Action changed, Action<int>? beforeWrite = null, IncrementalHash? hasher = null) : Stream
     {
         public long BytesWritten { get; private set; }
         public override bool CanRead => false; public override bool CanSeek => false; public override bool CanWrite => true;
         public override long Length => BytesWritten; public override long Position { get => BytesWritten; set => throw new NotSupportedException(); }
         public override void Flush() => inner.Flush();
         public override Task FlushAsync(CancellationToken cancellationToken) => inner.FlushAsync(cancellationToken);
-        public override void Write(byte[] buffer, int offset, int count) { beforeWrite?.Invoke(count); inner.Write(buffer, offset, count); BytesWritten += count; changed(); }
-        public override void Write(ReadOnlySpan<byte> buffer) { beforeWrite?.Invoke(buffer.Length); inner.Write(buffer); BytesWritten += buffer.Length; changed(); }
-        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) { beforeWrite?.Invoke(buffer.Length); await inner.WriteAsync(buffer, cancellationToken); BytesWritten += buffer.Length; changed(); }
+        public override void Write(byte[] buffer, int offset, int count) { beforeWrite?.Invoke(count); inner.Write(buffer, offset, count); hasher?.AppendData(buffer.AsSpan(offset, count)); BytesWritten += count; changed(); }
+        public override void Write(ReadOnlySpan<byte> buffer) { beforeWrite?.Invoke(buffer.Length); inner.Write(buffer); hasher?.AppendData(buffer); BytesWritten += buffer.Length; changed(); }
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) { beforeWrite?.Invoke(buffer.Length); await inner.WriteAsync(buffer, cancellationToken); hasher?.AppendData(buffer.Span); BytesWritten += buffer.Length; changed(); }
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) => WriteLegacyAsync(buffer, offset, count, cancellationToken);
-        private async Task WriteLegacyAsync(byte[] buffer, int offset, int count, CancellationToken token) { beforeWrite?.Invoke(count); await inner.WriteAsync(buffer.AsMemory(offset, count), token); BytesWritten += count; changed(); }
+        private async Task WriteLegacyAsync(byte[] buffer, int offset, int count, CancellationToken token) { beforeWrite?.Invoke(count); await inner.WriteAsync(buffer.AsMemory(offset, count), token); hasher?.AppendData(buffer.AsSpan(offset, count)); BytesWritten += count; changed(); }
         protected override void Dispose(bool disposing) { if (disposing) inner.Dispose(); base.Dispose(disposing); }
         public override ValueTask DisposeAsync() => inner.DisposeAsync();
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
