@@ -105,9 +105,13 @@ public sealed class SecondaryConnectionWorker(
                 case SecondaryCommandKind.ExportSource:
                 {
                     var payload = JsonSerializer.Deserialize<SecondaryExportPayload>(command.PayloadJson) ?? throw new InvalidOperationException("Export-Payload fehlt.");
-                    var archive = await transfers.PrepareSourceArchiveAsync(payload.Source, payload.Consistency, cancellationToken);
-                    var length = new FileInfo(archive).Length;
-                    await PushSourceAsync(client, command, archive, payload.JobId, length, cancellationToken);
+                    ArchiveProgress latest = new(0, 0, 0, 0, 0);
+                    var preparation = transfers.PrepareSourceArchiveAsync(
+                        payload.Source,
+                        payload.Consistency,
+                        cancellationToken,
+                        progress => latest = progress);
+                    await PushGrowingSourceAsync(client, command, preparation, payload.JobId, () => latest, cancellationToken);
                     var metrics = transfers.GetSourceMetrics(command.TransferId);
                     await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(metrics), "", cancellationToken);
                     break;
@@ -117,6 +121,22 @@ public sealed class SecondaryConnectionWorker(
                     var payload = JsonSerializer.Deserialize<SecondaryImportPayload>(command.PayloadJson) ?? throw new InvalidOperationException("Import-Payload fehlt.");
                     var destination = await PullTargetAsync(client, command, payload, cancellationToken);
                     await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(destination), "", cancellationToken);
+                    break;
+                }
+                case SecondaryCommandKind.ImportStreamingTarget:
+                {
+                    var payload = JsonSerializer.Deserialize<SecondaryStreamingImportPayload>(command.PayloadJson)
+                        ?? throw new InvalidOperationException("Streaming-Import-Payload fehlt.");
+                    var destination = await PullStreamingTargetAsync(client, command, payload, cancellationToken);
+                    await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(destination), "", cancellationToken);
+                    break;
+                }
+                case SecondaryCommandKind.StreamSourceToTarget:
+                {
+                    var payload = JsonSerializer.Deserialize<SecondaryLocalStreamingPayload>(command.PayloadJson)
+                        ?? throw new InvalidOperationException("Lokales Streaming-Payload fehlt.");
+                    var result = await StreamLocalSourceToTargetAsync(client, command, payload, cancellationToken);
+                    await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(result), "", cancellationToken);
                     break;
                 }
                 case SecondaryCommandKind.ExportArchive:
@@ -288,6 +308,174 @@ public sealed class SecondaryConnectionWorker(
         }
     }
 
+    private async Task<SecondaryLocalStreamingResult> StreamLocalSourceToTargetAsync(
+        HttpClient client,
+        SecondaryCommandEnvelope command,
+        SecondaryLocalStreamingPayload payload,
+        CancellationToken cancellationToken)
+    {
+        ArchiveProgress latest = new(0, 0, 0, 0, 0);
+        var preparation = transfers.PrepareSourceArchiveAsync(
+            payload.Source,
+            payload.Consistency,
+            cancellationToken,
+            progress => latest = progress);
+        var started = Stopwatch.StartNew();
+        long synced = 0;
+        GatewayStreamingWriteResult? write = null;
+        try
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var finalPath = transfers.SourceArchivePath(command.TransferId);
+                var buildingPath = transfers.SourceBuildingPath(command.TransferId);
+                var availablePath = File.Exists(finalPath) ? finalPath : buildingPath;
+                var available = TryGetFileLength(availablePath);
+                if (available > synced)
+                {
+                    try
+                    {
+                        write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, availablePath, final: false, cancellationToken);
+                    }
+                    catch (FileNotFoundException) when (File.Exists(finalPath))
+                    {
+                        continue;
+                    }
+                    synced = available;
+                    var speed = (long)(synced / Math.Max(0.001, started.Elapsed.TotalSeconds));
+                    var estimate = latest.EstimatedStoredBytes > 0 ? latest.EstimatedStoredBytes : synced;
+                    await ProgressAsync(client, command.Id, synced, estimate, speed, cancellationToken, latest.SourceBytes, write.WrittenBytes, latest.SpeedBytesPerSecond, speed);
+                    continue;
+                }
+                if (!preparation.IsCompleted)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+                    continue;
+                }
+
+                var archive = await preparation;
+                var metrics = transfers.GetSourceMetrics(command.TransferId);
+                write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, archive, final: true, cancellationToken);
+                await ProgressAsync(client, command.Id, metrics.StoredBytes, metrics.StoredBytes, 0, cancellationToken, metrics.SourceBytes, write.WrittenBytes, 0, 0);
+                return new SecondaryLocalStreamingResult(metrics, write.Destination);
+            }
+        }
+        finally
+        {
+            if (preparation.IsCompletedSuccessfully)
+            {
+                try { File.Delete(preparation.Result); } catch { }
+            }
+        }
+    }
+
+    private async Task PushGrowingSourceAsync(
+        HttpClient client,
+        SecondaryCommandEnvelope command,
+        Task<string> preparation,
+        long jobId,
+        Func<ArchiveProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        var offset = await GetOffsetAsync(client, $"/api/secondary/transfers/{command.TransferId}/source-status", cancellationToken);
+        var started = Stopwatch.StartNew();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var finalPath = transfers.SourceArchivePath(command.TransferId);
+            var buildingPath = transfers.SourceBuildingPath(command.TransferId);
+            var availablePath = File.Exists(finalPath) ? finalPath : buildingPath;
+            var available = TryGetFileLength(availablePath);
+
+            if (offset < available)
+            {
+                var count = (int)Math.Min(ChunkSize, available - offset);
+                var buffer = new byte[count];
+                try
+                {
+                    await using var input = new FileStream(availablePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, ChunkSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    input.Position = offset;
+                    await input.ReadExactlyAsync(buffer, cancellationToken);
+                }
+                catch (FileNotFoundException) when (File.Exists(finalPath))
+                {
+                    continue;
+                }
+
+                var result = await SendSourceChunkAsync(client, command, jobId, offset, -1, "", false, buffer, cancellationToken);
+                if (!result.Success && result.Offset == offset) throw new IOException(result.Message);
+                offset = result.Offset;
+                var current = progress();
+                var speed = (long)(offset / Math.Max(0.001, started.Elapsed.TotalSeconds));
+                var estimatedTotal = current.EstimatedStoredBytes > 0 ? current.EstimatedStoredBytes : Math.Max(offset, current.StoredBytes);
+                await ProgressAsync(
+                    client,
+                    command.Id,
+                    offset,
+                    estimatedTotal,
+                    speed,
+                    cancellationToken,
+                    current.SourceBytes,
+                    0,
+                    current.SpeedBytesPerSecond,
+                    0);
+                continue;
+            }
+
+            if (!preparation.IsCompleted)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+                continue;
+            }
+
+            var archivePath = await preparation;
+            var total = new FileInfo(archivePath).Length;
+            if (offset < total) continue;
+            var metrics = transfers.GetSourceMetrics(command.TransferId);
+            var finalResult = await SendSourceChunkAsync(client, command, jobId, offset, total, metrics.Sha256, true, [], cancellationToken);
+            if (!finalResult.Success || !finalResult.Completed) throw new IOException(finalResult.Message);
+            var finalProgress = progress();
+            await ProgressAsync(
+                client,
+                command.Id,
+                total,
+                total,
+                (long)(total / Math.Max(0.001, started.Elapsed.TotalSeconds)),
+                cancellationToken,
+                finalProgress.SourceBytes > 0 ? finalProgress.SourceBytes : metrics.SourceBytes,
+                total,
+                0,
+                0);
+            return;
+        }
+    }
+
+    private async Task<GatewayUploadResult> SendSourceChunkAsync(
+        HttpClient client,
+        SecondaryCommandEnvelope command,
+        long jobId,
+        long offset,
+        long total,
+        string sha256,
+        bool final,
+        byte[] buffer,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Put, _primaryEndpoint + $"/api/secondary/transfers/{command.TransferId}/source");
+        AddToken(request);
+        request.Headers.Add("X-MatBu-Transfer-Offset", offset.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        request.Headers.Add("X-MatBu-Transfer-Final", final.ToString());
+        request.Headers.Add("X-MatBu-Transfer-Job-Id", jobId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        request.Headers.Add("X-MatBu-Transfer-Total", total.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        request.Headers.Add("X-MatBu-Transfer-Sha256", sha256);
+        request.Content = new ByteArrayContent(buffer);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<GatewayUploadResult>(cancellationToken: cancellationToken)
+            ?? throw new IOException("Primary antwortete ohne Source-Status.");
+    }
+
     private async Task PushSourceAsync(HttpClient client, SecondaryCommandEnvelope command, string archivePath, long jobId, long total, CancellationToken cancellationToken)
     {
         var sha256 = await ArchiveIntegrity.ComputeSha256Async(archivePath, cancellationToken);
@@ -395,6 +583,81 @@ public sealed class SecondaryConnectionWorker(
         return manifest;
     }
 
+    private async Task<string> PullStreamingTargetAsync(
+        HttpClient client,
+        SecondaryCommandEnvelope command,
+        SecondaryStreamingImportPayload payload,
+        CancellationToken cancellationToken)
+    {
+        var dataPath = Environment.GetEnvironmentVariable("MATBU_DATA_PATH") ?? "/data";
+        var partial = Path.Combine(dataPath, "transfer-cache", $"stream-target-{command.TransferId}.partial");
+        Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
+        var offset = File.Exists(partial) ? new FileInfo(partial).Length : 0;
+        var started = Stopwatch.StartNew();
+        var lastHeartbeat = TimeSpan.Zero;
+        GatewayStreamingWriteResult? write = null;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var status = await GetStreamStatusAsync(client, command.TransferId, cancellationToken);
+            if (status.Failed) throw new IOException(string.IsNullOrWhiteSpace(status.Error) ? "Die Streaming-Quelle ist fehlgeschlagen." : status.Error);
+            if (offset > status.AvailableBytes)
+            {
+                File.Delete(partial);
+                offset = 0;
+            }
+
+            if (offset < status.AvailableBytes)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, _primaryEndpoint + $"/api/secondary/transfers/{command.TransferId}/stream?offset={offset}&maxBytes={ChunkSize}");
+                AddToken(request);
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+                await using (var output = new FileStream(partial, offset > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, ChunkSize, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                {
+                    await input.CopyToAsync(output, ChunkSize, cancellationToken);
+                    await output.FlushAsync(cancellationToken);
+                }
+                offset = new FileInfo(partial).Length;
+                write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, partial, final: false, cancellationToken);
+                var speed = (long)(offset / Math.Max(0.001, started.Elapsed.TotalSeconds));
+                await ProgressAsync(client, command.Id, offset, Math.Max(status.TotalBytes, status.AvailableBytes), speed, cancellationToken, 0, write.WrittenBytes, 0, speed);
+                lastHeartbeat = started.Elapsed;
+                continue;
+            }
+
+            if (status.Completed)
+            {
+                if (!ArchiveIntegrity.IsSha256(status.Sha256)) throw new InvalidDataException("Die Primary meldet keinen gueltigen SHA-256-Hash fuer den Streaming-Transfer.");
+                await ArchiveIntegrity.VerifySha256Async(partial, status.Sha256, cancellationToken);
+                write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, partial, final: true, cancellationToken);
+                var speed = (long)(offset / Math.Max(0.001, started.Elapsed.TotalSeconds));
+                await ProgressAsync(client, command.Id, offset, status.TotalBytes, speed, cancellationToken, 0, write.WrittenBytes, 0, 0);
+                try { File.Delete(partial); } catch { }
+                return write.Destination;
+            }
+
+            if (started.Elapsed - lastHeartbeat >= TimeSpan.FromSeconds(5))
+            {
+                await ProgressAsync(client, command.Id, offset, Math.Max(status.TotalBytes, status.AvailableBytes), 0, cancellationToken, 0, write?.WrittenBytes ?? 0, 0, 0);
+                lastHeartbeat = started.Elapsed;
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(200), cancellationToken);
+        }
+    }
+
+    private async Task<GatewayStreamStatus> GetStreamStatusAsync(HttpClient client, string transferId, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, _primaryEndpoint + $"/api/secondary/transfers/{transferId}/stream-status");
+        AddToken(request);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<GatewayStreamStatus>(JsonOptions, cancellationToken)
+            ?? throw new IOException("Primary antwortete ohne Streaming-Status.");
+    }
+
     private async Task<string> PullTargetAsync(HttpClient client, SecondaryCommandEnvelope command, SecondaryImportPayload payload, CancellationToken cancellationToken)
     {
         var final = await PullArchiveAsync(client, command, payload.Target.TaskId, payload.TotalBytes, payload.Sha256, cancellationToken);
@@ -461,11 +724,21 @@ public sealed class SecondaryConnectionWorker(
         return status?.Offset ?? 0;
     }
 
-    private async Task ProgressAsync(HttpClient client, long commandId, long bytes, long total, long speed, CancellationToken cancellationToken)
+    private async Task ProgressAsync(
+        HttpClient client,
+        long commandId,
+        long bytes,
+        long total,
+        long speed,
+        CancellationToken cancellationToken,
+        long bytesRead = 0,
+        long bytesWritten = 0,
+        long readSpeed = 0,
+        long writeSpeed = 0)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, _primaryEndpoint + $"/api/secondary/commands/{commandId}/progress");
         AddToken(request);
-        request.Content = JsonContent.Create(new SecondaryCommandProgress(bytes, total, speed, "Secondary-Verbindung"));
+        request.Content = JsonContent.Create(new SecondaryCommandProgress(bytes, total, speed, "Secondary-Verbindung", bytesRead, bytesWritten, readSpeed, writeSpeed));
         using var response = await client.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
     }
@@ -491,6 +764,12 @@ public sealed class SecondaryConnectionWorker(
         {
             // Transfer-Caches are opportunistic. A later maintenance pass may remove leftovers.
         }
+    }
+
+    private static long TryGetFileLength(string path)
+    {
+        try { return File.Exists(path) ? new FileInfo(path).Length : 0; }
+        catch (FileNotFoundException) { return 0; }
     }
 
     private sealed record TransferOffsetResponse(long Offset);

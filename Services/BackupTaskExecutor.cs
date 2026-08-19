@@ -6,6 +6,9 @@ namespace MatBu.Services;
 
 public sealed record SecondaryExportPayload(GatewaySourceRequest Source, long JobId, BackupConsistencySettings Consistency);
 public sealed record SecondaryImportPayload(GatewayTargetRequest Target, long JobId, long TotalBytes, string Sha256);
+public sealed record SecondaryStreamingImportPayload(GatewayTargetRequest Target, long JobId);
+public sealed record SecondaryLocalStreamingPayload(GatewaySourceRequest Source, GatewayTargetRequest Target, long JobId, BackupConsistencySettings Consistency);
+public sealed record SecondaryLocalStreamingResult(GatewayArchiveMetrics Metrics, string Destination);
 
 public sealed class BackupTaskExecutor(
     PersistentStore store,
@@ -80,6 +83,32 @@ public sealed class BackupTaskExecutor(
             if (BackupMethodPolicy.IsChunked(task.Method))
             {
                 await ExecuteReverseIncrementalAsync(task, source, target, sourceInstance, targetInstance, job, route, cancellationToken);
+                return;
+            }
+
+            if (task.Method == BackupMethod.Full &&
+                sourceInstance.Role == InstanceRole.Secondary &&
+                targetInstance.Role == InstanceRole.Primary)
+            {
+                await ExecuteStreamedFullFromSecondaryAsync(task, source, target, sourceInstance, targetInstance, job, route, cancellationToken);
+                return;
+            }
+
+            if (task.Method == BackupMethod.Full &&
+                sourceInstance.Role == InstanceRole.Secondary &&
+                targetInstance.Role == InstanceRole.Secondary &&
+                sourceInstance.Id != targetInstance.Id)
+            {
+                await ExecuteStreamedFullAcrossSecondariesAsync(task, source, target, sourceInstance, targetInstance, job, route, cancellationToken);
+                return;
+            }
+
+            if (task.Method == BackupMethod.Full &&
+                sourceInstance.Role == InstanceRole.Secondary &&
+                targetInstance.Role == InstanceRole.Secondary &&
+                sourceInstance.Id == targetInstance.Id)
+            {
+                await ExecuteStreamedFullOnSameSecondaryAsync(task, source, target, sourceInstance, job, route, cancellationToken);
                 return;
             }
 
@@ -465,6 +494,186 @@ public sealed class BackupTaskExecutor(
             result.TotalBytes,
             result.TotalBytes);
         return result;
+    }
+
+    private async Task ExecuteStreamedFullOnSameSecondaryAsync(
+        BackupTask task,
+        BackupObject source,
+        BackupObject target,
+        MatBuInstance instance,
+        TransferJob job,
+        string route,
+        CancellationToken cancellationToken)
+    {
+        var transferId = EnsureTransferId(job);
+        var sourceCredential = store.GetSmbCredential(source.Id);
+        var targetCredential = store.GetSmbCredential(target.Id);
+        var sourceRequest = new GatewaySourceRequest(
+            transferId,
+            source.Kind,
+            source.Location,
+            sourceCredential?.Username,
+            sourceCredential?.Password,
+            Compression: job.Compression,
+            IncludedPaths: SourceSelection.Parse(job.SourceSelectionJson));
+        var targetRequest = new GatewayTargetRequest(
+            task.Id,
+            target.Kind,
+            target.Location,
+            targetCredential?.Username,
+            targetCredential?.Password,
+            task.Compression);
+        var payload = new SecondaryLocalStreamingPayload(sourceRequest, targetRequest, job.Id, BackupConsistencySettings.FromTask(task));
+
+        AppendStep(job.Id, "Streaming", "Started", "Die Secondary liest die Quelle und schreibt jeden fertigen Block direkt ins Ziel; die Primary koordiniert und protokolliert.", instance.Name, target.Location);
+        var commandId = commands.Queue(instance.Id, SecondaryCommandKind.StreamSourceToTarget, transferId, payload);
+        var command = await commands.WaitForCompletionAsync(commandId, cancellationToken);
+        if (command.State != "Completed")
+            throw new IOException(string.IsNullOrWhiteSpace(command.Error) ? "Die Secondary konnte die lokale Streaming-Pipeline nicht abschliessen." : command.Error);
+
+        var result = JsonSerializer.Deserialize<SecondaryLocalStreamingResult>(command.ResultJson)
+            ?? throw new InvalidDataException("Die Secondary lieferte kein Streaming-Ergebnis.");
+        CompleteStreamedJob(job.Id, result.Metrics.SourceBytes, result.Metrics.StoredBytes, result.Destination, result.Metrics.Sha256);
+        AppendStep(job.Id, "Quelle", "Completed", $"{result.Metrics.SourceBytes:N0} Bytes auf '{instance.Name}' gelesen.", instance.Name, source.Location, result.Metrics.SourceBytes, result.Metrics.SourceBytes);
+        AppendStep(job.Id, "Ziel", "Completed", $"{result.Metrics.StoredBytes:N0} Bytes waehrend der Quellaufnahme nach '{result.Destination}' geschrieben.", instance.Name, result.Destination, result.Metrics.StoredBytes, result.Metrics.StoredBytes);
+        MarkTask(task.Id, "Gesichert");
+        await ApplyRetentionSafelyAsync(task, target, instance, job.Id, cancellationToken);
+        AppendStep(job.Id, "Abschluss", "Completed", $"Streaming-Backup erfolgreich. Weg: {route}. Tatsaechliches Ziel: {result.Destination}.", instance.Name, result.Destination, result.Metrics.StoredBytes, result.Metrics.StoredBytes);
+    }
+
+    private async Task ExecuteStreamedFullAcrossSecondariesAsync(
+        BackupTask task,
+        BackupObject source,
+        BackupObject target,
+        MatBuInstance sourceInstance,
+        MatBuInstance targetInstance,
+        TransferJob job,
+        string route,
+        CancellationToken cancellationToken)
+    {
+        var transferId = EnsureTransferId(job);
+        var sourceCredential = store.GetSmbCredential(source.Id);
+        var targetCredential = store.GetSmbCredential(target.Id);
+        var sourceRequest = new GatewaySourceRequest(
+            transferId,
+            source.Kind,
+            source.Location,
+            sourceCredential?.Username,
+            sourceCredential?.Password,
+            Compression: job.Compression,
+            IncludedPaths: SourceSelection.Parse(job.SourceSelectionJson));
+        var targetRequest = new GatewayTargetRequest(
+            task.Id,
+            target.Kind,
+            target.Location,
+            targetCredential?.Username,
+            targetCredential?.Password,
+            task.Compression);
+
+        AppendStep(job.Id, "Streaming", "Started", "Quelle, Primary-Relay und Ziel laufen als gemeinsame Pipeline mit fortsetzbaren Checkpoints.", $"{sourceInstance.Name} -> Primary -> {targetInstance.Name}", target.Location);
+        var targetCommandId = commands.Queue(targetInstance.Id, SecondaryCommandKind.ImportStreamingTarget, transferId, new SecondaryStreamingImportPayload(targetRequest, job.Id));
+        var sourceCommandId = commands.Queue(sourceInstance.Id, SecondaryCommandKind.ExportSource, transferId, new SecondaryExportPayload(sourceRequest, job.Id, BackupConsistencySettings.FromTask(task)));
+        AppendStep(job.Id, "Gateway", "Queued", $"Source-Kommando #{sourceCommandId} und Target-Kommando #{targetCommandId} wurden parallel bereitgestellt.", $"{sourceInstance.Name} -> {targetInstance.Name}", transferId);
+
+        var sourceCommand = await commands.WaitForCompletionAsync(sourceCommandId, cancellationToken);
+        if (sourceCommand.State != "Completed")
+            throw new IOException(string.IsNullOrWhiteSpace(sourceCommand.Error) ? "Die Source-Secondary konnte den Stream nicht bereitstellen." : sourceCommand.Error);
+        var targetCommand = await commands.WaitForCompletionAsync(targetCommandId, cancellationToken);
+        if (targetCommand.State != "Completed")
+            throw new IOException(string.IsNullOrWhiteSpace(targetCommand.Error) ? "Die Target-Secondary konnte den Stream nicht schreiben." : targetCommand.Error);
+
+        var metrics = JsonSerializer.Deserialize<GatewayArchiveMetrics>(sourceCommand.ResultJson)
+            ?? new GatewayArchiveMetrics(0, sourceCommand.BytesTransferred);
+        var destination = string.IsNullOrWhiteSpace(targetCommand.ResultJson)
+            ? target.Location
+            : JsonSerializer.Deserialize<string>(targetCommand.ResultJson) ?? targetCommand.ResultJson.Trim('"');
+        var total = metrics.StoredBytes > 0 ? metrics.StoredBytes : Math.Max(sourceCommand.BytesTransferred, targetCommand.BytesTransferred);
+        CompleteStreamedJob(job.Id, metrics.SourceBytes, total, destination, metrics.Sha256);
+
+        AppendStep(job.Id, "Quelle", "Completed", $"{metrics.SourceBytes:N0} Bytes auf '{sourceInstance.Name}' gelesen.", sourceInstance.Name, source.Location, metrics.SourceBytes, metrics.SourceBytes);
+        AppendStep(job.Id, "Gateway", "Completed", $"{total:N0} Bytes firewall-freundlich ueber die Primary weitergeleitet.", $"{sourceInstance.Name} -> Primary -> {targetInstance.Name}", transferId, total, total);
+        AppendStep(job.Id, "Ziel", "Completed", $"{total:N0} Bytes fortlaufend nach '{destination}' geschrieben.", targetInstance.Name, destination, total, total);
+        MarkTask(task.Id, "Gesichert");
+        await ApplyRetentionSafelyAsync(task, target, targetInstance, job.Id, cancellationToken);
+        AppendStep(job.Id, "Abschluss", "Completed", $"Streaming-Backup erfolgreich. Weg: {route}. Tatsaechliches Ziel: {destination}.", $"{sourceInstance.Name} -> {targetInstance.Name}", destination, total, total);
+        TryDelete(Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar"));
+    }
+
+    private async Task ExecuteStreamedFullFromSecondaryAsync(
+        BackupTask task,
+        BackupObject source,
+        BackupObject target,
+        MatBuInstance sourceInstance,
+        MatBuInstance targetInstance,
+        TransferJob job,
+        string route,
+        CancellationToken cancellationToken)
+    {
+        var transferId = EnsureTransferId(job);
+        var credential = store.GetSmbCredential(source.Id);
+        var request = new GatewaySourceRequest(
+            transferId,
+            source.Kind,
+            source.Location,
+            credential?.Username,
+            credential?.Password,
+            Compression: job.Compression,
+            IncludedPaths: SourceSelection.Parse(job.SourceSelectionJson));
+        var consistency = BackupConsistencySettings.FromTask(task);
+
+        AppendStep(job.Id, "Streaming", "Started", "Quelle lesen, zur Primary uebertragen und ins Ziel schreiben laufen als gemeinsame Pipeline.", $"{sourceInstance.Name} -> {targetInstance.Name}", target.Location);
+        AppendStep(job.Id, "Quelle", "Started", $"Quell-Object '{source.Name}' wird auf '{sourceInstance.Name}' fortlaufend archiviert.", sourceInstance.Name, source.Location);
+        AppendStep(job.Id, "Ziel", "Started", $"Eintreffende Bloecke werden sofort in '{target.Name}' geschrieben.", targetInstance.Name, target.Location);
+
+        var commandId = commands.Queue(sourceInstance.Id, SecondaryCommandKind.ExportSource, transferId, new SecondaryExportPayload(request, job.Id, consistency));
+        AppendStep(job.Id, "Gateway", "Queued", $"Streaming-Kommando #{commandId} wurde ueber die ausgehende Secondary-Verbindung bereitgestellt.", sourceInstance.Name, source.Location);
+        if (job.ConsistencyMode != BackupConsistencyMode.None)
+            AppendStep(job.Id, "Konsistenz", "Queued", $"Konsistenzmodus {ConsistencyLabel(job.ConsistencyMode)} wird direkt um die Quellaufnahme ausgefuehrt.", sourceInstance.Name, job.ConsistencyContainerNames);
+
+        var command = await commands.WaitForCompletionAsync(commandId, cancellationToken);
+        if (command.State != "Completed")
+            throw new IOException(string.IsNullOrWhiteSpace(command.Error) ? "Die Secondary konnte die Streaming-Pipeline nicht abschliessen." : command.Error);
+
+        var metrics = JsonSerializer.Deserialize<GatewayArchiveMetrics>(command.ResultJson)
+            ?? new GatewayArchiveMetrics(0, command.BytesTransferred);
+        var completed = ReadJob(job.Id);
+        var total = metrics.StoredBytes > 0 ? metrics.StoredBytes : Math.Max(completed.BytesTransferred, command.BytesTransferred);
+        var destination = string.IsNullOrWhiteSpace(completed.ResolvedDestination) ? target.Location : completed.ResolvedDestination;
+        CompleteStreamedJob(job.Id, metrics.SourceBytes, total, destination, metrics.Sha256);
+
+        if (job.ConsistencyMode != BackupConsistencyMode.None)
+            AppendStep(job.Id, "Konsistenz", "Completed", "Die Secondary hat die Anwendung nach der fortlaufenden Quellaufnahme wieder freigegeben.", sourceInstance.Name, job.ConsistencyContainerNames);
+        AppendStep(job.Id, "Quelle", "Completed", $"{metrics.SourceBytes:N0} Bytes gelesen und fortlaufend archiviert.", sourceInstance.Name, source.Location, metrics.SourceBytes, metrics.SourceBytes);
+        AppendStep(job.Id, "Gateway", "Completed", $"{total:N0} Bytes uebertragen; kein vollstaendiges Vorab-Archiv war erforderlich.", $"{sourceInstance.Name} -> Primary", transferId, total, total);
+        AppendStep(job.Id, "Ziel", "Completed", $"{total:N0} Bytes wurden waehrend der Uebertragung nach '{destination}' geschrieben.", targetInstance.Name, destination, total, total);
+
+        MarkTask(task.Id, "Gesichert");
+        await ApplyRetentionSafelyAsync(task, target, targetInstance, job.Id, cancellationToken);
+        AppendStep(job.Id, "Abschluss", "Completed", $"Streaming-Backup erfolgreich. Weg: {route}. Tatsaechliches Ziel: {destination}.", $"{sourceInstance.Name} -> {targetInstance.Name}", destination, total, total);
+        TryDelete(Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar"));
+    }
+
+    private void CompleteStreamedJob(long jobId, long read, long transferred, string destination, string sha256)
+    {
+        store.Update(data =>
+        {
+            var job = data.TransferJobs.First(item => item.Id == jobId);
+            job.State = "Completed";
+            job.BytesRead = read;
+            job.BytesTransferred = transferred;
+            job.BytesWritten = transferred;
+            job.TotalBytes = transferred;
+            job.SourceBytes = read;
+            job.StoredBytes = transferred;
+            job.EstimatedStoredBytes = transferred;
+            job.ReadSpeedBytesPerSecond = 0;
+            job.SpeedBytesPerSecond = 0;
+            job.WriteSpeedBytesPerSecond = 0;
+            job.CheckpointPath = destination;
+            job.ResolvedDestination = destination;
+            if (ArchiveIntegrity.IsSha256(sha256)) job.ArchiveSha256 = sha256.ToLowerInvariant();
+            job.UpdateDate = DateTimeOffset.UtcNow;
+        });
     }
 
     private async Task<long> EnsureSourceArchiveAsync(

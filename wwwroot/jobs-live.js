@@ -6,7 +6,8 @@
     if (job.state === 'Failed' || job.state === 'Fehler') return 'Abgebrochen';
     if (job.state === 'Completed') return 'Fertig';
     if (!job.totalBytes) return '—';
-    const remainingBytes = Math.max(0, job.totalBytes - job.bytesTransferred);
+    const completedBytes = job.bytesWritten > 0 ? Math.min(job.bytesTransferred, job.bytesWritten) : job.bytesTransferred;
+    const remainingBytes = Math.max(0, job.totalBytes - completedBytes);
     if (remainingBytes === 0) return 'Fertig';
     if (!job.speedBytesPerSecond) return '—';
     let seconds = Math.ceil(remainingBytes / job.speedBytesPerSecond);
@@ -28,13 +29,18 @@
     for (const job of jobs) {
       const row = document.querySelector(`[data-job-id="${job.id}"]`);
       if (!row) continue;
-      const percent = job.totalBytes ? Math.min(100, Math.round(job.bytesTransferred * 100 / job.totalBytes)) : 0;
+      const completedBytes = job.bytesWritten > 0 ? Math.min(job.bytesTransferred, job.bytesWritten) : job.bytesTransferred;
+      const percent = job.totalBytes ? Math.min(100, Math.round(completedBytes * 100 / job.totalBytes)) : 0;
       row.querySelector('[data-job-bar]').style.width = `${percent}%`;
       const progress = row.querySelector('[data-job-progress]');
       if (progress) progress.textContent = progress.dataset.jobProgressMode === 'compact'
         ? `${percent}%`
         : `${percent}% (${job.bytesTransferred} / ${job.totalBytes} bytes)`;
       row.querySelector('[data-job-speed]').textContent = formatSpeed(job.speedBytesPerSecond);
+      const pipeline = row.querySelector('[data-job-pipeline]');
+      if (pipeline) pipeline.textContent = `Gelesen ${formatBytes(job.bytesRead)} · übertragen ${formatBytes(job.bytesTransferred)} · geschrieben ${formatBytes(job.bytesWritten)}`;
+      const rates = row.querySelector('[data-job-rates]');
+      if (rates) rates.textContent = `Lesen ${formatSpeed(job.readSpeedBytesPerSecond)} · Schreiben ${formatSpeed(job.writeSpeedBytesPerSecond)}`;
       const state = row.querySelector('[data-job-state] .status');
       if (state) {
         state.textContent = job.state;

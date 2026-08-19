@@ -9,6 +9,8 @@ public sealed record GatewaySourceRequest(string TransferId, ObjectKind Kind, st
 public sealed record GatewayTargetRequest(long TaskId, ObjectKind Kind, string Location, string? SmbUsername, string? SmbPassword, BackupCompression Compression = BackupCompression.None, string Sha256 = "");
 public sealed record GatewayUploadResult(bool Success, long Offset, bool Completed, string Message);
 public sealed record GatewayArchiveMetrics(long SourceBytes, long StoredBytes, string Sha256 = "");
+public sealed record GatewayStreamStatus(long AvailableBytes, bool Completed, long TotalBytes, string Sha256, bool Failed = false, string Error = "");
+public sealed record GatewayStreamingWriteResult(string Destination, long WrittenBytes);
 
 public sealed class GatewayTransferService(
     ArchiveService archiveService,
@@ -18,21 +20,29 @@ public sealed class GatewayTransferService(
     ILogger<GatewayTransferService> logger)
 {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _transferLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, PipelineRateState> _pipelineRates = new(StringComparer.OrdinalIgnoreCase);
 
     public Task<string> PrepareSourceArchiveAsync(GatewaySourceRequest request, CancellationToken cancellationToken) =>
-        PrepareSourceArchiveAsync(request, new BackupConsistencySettings(BackupConsistencyMode.None, "", "", "", 60), cancellationToken);
+        PrepareSourceArchiveAsync(request, new BackupConsistencySettings(BackupConsistencyMode.None, "", "", "", 60), cancellationToken, null);
 
-    public async Task<string> PrepareSourceArchiveAsync(GatewaySourceRequest request, BackupConsistencySettings consistency, CancellationToken cancellationToken)
+    public Task<string> PrepareSourceArchiveAsync(GatewaySourceRequest request, BackupConsistencySettings consistency, CancellationToken cancellationToken) =>
+        PrepareSourceArchiveAsync(request, consistency, cancellationToken, null);
+
+    public async Task<string> PrepareSourceArchiveAsync(
+        GatewaySourceRequest request,
+        BackupConsistencySettings consistency,
+        CancellationToken cancellationToken,
+        Action<ArchiveProgress>? progress)
     {
         EnsureTransferId(request.TransferId);
         var gate = _transferLocks.GetOrAdd(request.TransferId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
         {
-            var archivePath = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{request.TransferId}.tar");
+            var archivePath = SourceArchivePath(request.TransferId);
             if (File.Exists(archivePath)) return archivePath;
 
-            var buildingPath = archivePath + ".building";
+            var buildingPath = SourceBuildingPath(request.TransferId);
             if (File.Exists(buildingPath)) File.Delete(buildingPath);
             var source = new BackupObject { Kind = request.Kind, Location = request.Location };
             (string Username, string Password)? credential = string.IsNullOrWhiteSpace(request.SmbUsername) || request.SmbPassword is null ? null : (request.SmbUsername!, request.SmbPassword!);
@@ -41,8 +51,7 @@ public sealed class GatewayTransferService(
             {
                 if (consistency.Mode != BackupConsistencyMode.None)
                     lease = await dockerConsistency.BeginAsync(consistency, cancellationToken);
-                var result = await archiveService.CreateCompressedAsync(source, credential, buildingPath, request.Compression, null, cancellationToken, request.IncludedPaths);
-                File.Move(buildingPath, archivePath, overwrite: true);
+                var result = await archiveService.CreateCompressedAsync(source, credential, archivePath, request.Compression, progress, cancellationToken, request.IncludedPaths);
                 var sha256 = await ArchiveIntegrity.ComputeSha256Async(archivePath, cancellationToken);
                 await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes, sha256)), cancellationToken);
                 return archivePath;
@@ -53,6 +62,70 @@ public sealed class GatewayTransferService(
             }
         }
         finally { gate.Release(); }
+    }
+
+    public string SourceArchivePath(string transferId)
+    {
+        EnsureTransferId(transferId);
+        return Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar");
+    }
+
+    public string SourceBuildingPath(string transferId) => SourceArchivePath(transferId) + ".building";
+
+    public GatewayStreamStatus GetIncomingSourceStatus(string transferId)
+    {
+        EnsureTransferId(transferId);
+        var final = SourceArchivePath(transferId);
+        var partial = final + ".partial";
+        var path = File.Exists(final) ? final : partial;
+        var available = File.Exists(path) ? new FileInfo(path).Length : 0;
+        var completed = File.Exists(final);
+        var job = store.Read().TransferJobs.FirstOrDefault(item => item.TransferId.Equals(transferId, StringComparison.OrdinalIgnoreCase));
+        var total = completed ? available : Math.Max(0, job?.TotalBytes ?? 0);
+        var failed = job?.State is "Fehler" or "Failed";
+        return new GatewayStreamStatus(available, completed, total, completed ? job?.ArchiveSha256 ?? "" : "", failed, failed ? job?.Error ?? "Streaming source failed." : "");
+    }
+
+    public Stream OpenIncomingSourceRange(string transferId, long offset, long maxBytes)
+    {
+        var status = GetIncomingSourceStatus(transferId);
+        if (offset < 0 || offset > status.AvailableBytes) throw new ArgumentOutOfRangeException(nameof(offset));
+        var final = SourceArchivePath(transferId);
+        var path = File.Exists(final) ? final : final + ".partial";
+        var length = Math.Min(Math.Max(0, maxBytes), status.AvailableBytes - offset);
+        var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return new RangeReadStream(file, offset, length);
+    }
+
+    public async Task<GatewayStreamingWriteResult> SyncTargetCheckpointAsync(
+        string transferId,
+        GatewayTargetRequest target,
+        string sourcePath,
+        bool final,
+        CancellationToken cancellationToken)
+    {
+        EnsureTransferId(transferId);
+        var fileName = $"task-{target.TaskId}-{transferId}{ArchiveExtension(target.Compression)}";
+        if (target.Kind == ObjectKind.LocalFolder)
+        {
+            Directory.CreateDirectory(target.Location);
+            var destination = Path.Combine(target.Location, fileName);
+            var partial = destination + ".partial";
+            await CopyAvailableTailAsync(sourcePath, partial, cancellationToken);
+            var written = new FileInfo(partial).Length;
+            if (final) File.Move(partial, destination, overwrite: true);
+            return new GatewayStreamingWriteResult(destination, written);
+        }
+        if (target.Kind == ObjectKind.Smb)
+        {
+            (string Username, string Password)? credential = string.IsNullOrWhiteSpace(target.SmbUsername) || target.SmbPassword is null
+                ? null
+                : (target.SmbUsername!, target.SmbPassword!);
+            var written = await smbClient.SyncPartialFileAsync(target.Location, sourcePath, fileName, credential, cancellationToken);
+            if (final) await smbClient.FinalizePartialFileAsync(target.Location, fileName, credential, cancellationToken);
+            return new GatewayStreamingWriteResult($"{target.Location.TrimEnd('\\', '/')}/{fileName}", written);
+        }
+        throw new InvalidOperationException($"Streaming target type {target.Kind} is not supported.");
     }
 
     public long GetUploadOffset(string transferId)
@@ -111,22 +184,50 @@ public sealed class GatewayTransferService(
         {
             var partial = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar.partial");
             Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
+            var target = jobId > 0 ? ResolveStreamingPrimaryTarget(jobId) : null;
+            var completedArchive = SourceArchivePath(transferId);
+            if (!File.Exists(partial) && File.Exists(completedArchive))
+            {
+                var completedLength = new FileInfo(completedArchive).Length;
+                if (completedLength != offset)
+                    return new GatewayUploadResult(false, completedLength, false, "Der abgeschlossene Source-Checkpoint hat einen anderen Offset.");
+                if (!final)
+                    return new GatewayUploadResult(true, completedLength, false, "Source-Daten sind bereits vollstaendig empfangen.");
+                if (completedLength != totalBytes || !ArchiveIntegrity.IsSha256(expectedSha256))
+                    return new GatewayUploadResult(false, completedLength, false, "Finale Source-Metadaten sind ungueltig.");
+                await ArchiveIntegrity.VerifySha256Async(completedArchive, expectedSha256, cancellationToken);
+                var completedWritten = target is null ? 0 : await SyncStreamingTargetAsync(target, completedArchive, final: true, cancellationToken);
+                UpdatePipelineJob(jobId, transferId, completedLength, completedWritten, totalBytes, completedArchive);
+                if (jobId > 0)
+                {
+                    store.Update(data =>
+                    {
+                        var job = data.TransferJobs.FirstOrDefault(item => item.Id == jobId);
+                        if (job is null) return;
+                        job.ArchiveSha256 = expectedSha256.ToLowerInvariant();
+                        if (target is not null) job.ResolvedDestination = target.Destination;
+                        job.UpdateDate = DateTimeOffset.UtcNow;
+                    });
+                }
+                return new GatewayUploadResult(true, completedLength, true, "Source-Transfer war bereits abgeschlossen und wurde bestaetigt.");
+            }
             var current = File.Exists(partial) ? new FileInfo(partial).Length : 0;
             if (current != offset) return new GatewayUploadResult(false, current, false, "Der Source-Checkpoint stimmt nicht mit der Primary überein.");
-            await using (var output = new FileStream(partial, FileMode.Append, FileAccess.Write, FileShare.None)) await body.CopyToAsync(output, cancellationToken);
-            current = new FileInfo(partial).Length;
-            if (jobId > 0)
+            await using (var output = new FileStream(partial, FileMode.Append, FileAccess.Write, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                store.Update(data =>
-                {
-                    var job = data.TransferJobs.FirstOrDefault(x => x.Id == jobId);
-                    if (job is not null) { job.State = "Running"; job.BytesTransferred = current; job.TotalBytes = totalBytes; job.CheckpointPath = partial; job.UpdateDate = DateTimeOffset.UtcNow; }
-                });
+                await body.CopyToAsync(output, 4 * 1024 * 1024, cancellationToken);
+                await output.FlushAsync(cancellationToken);
             }
+            current = new FileInfo(partial).Length;
+            var written = target is null
+                ? 0
+                : await SyncStreamingTargetAsync(target, partial, final: false, cancellationToken);
+            UpdatePipelineJob(jobId, transferId, current, written, totalBytes, partial);
             if (!final) return new GatewayUploadResult(true, current, false, "Source-Chunk gespeichert.");
             if (current != totalBytes || !ArchiveIntegrity.IsSha256(expectedSha256))
             {
                 File.Delete(partial);
+                await ResetStreamingTargetAsync(target, cancellationToken);
                 return new GatewayUploadResult(false, 0, false, "Source-Transfer verworfen: Größe oder SHA-256-Prüfsumme fehlt.");
             }
             try
@@ -136,16 +237,27 @@ public sealed class GatewayTransferService(
             catch (InvalidDataException ex)
             {
                 File.Delete(partial);
+                await ResetStreamingTargetAsync(target, cancellationToken);
                 return new GatewayUploadResult(false, 0, false, ex.Message);
             }
-            var archive = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar");
+            var archive = SourceArchivePath(transferId);
             File.Move(partial, archive, overwrite: true);
+            if (target is not null)
+            {
+                written = await SyncStreamingTargetAsync(target, archive, final: true, cancellationToken);
+                UpdatePipelineJob(jobId, transferId, current, written, totalBytes, archive);
+            }
             if (jobId > 0)
             {
                 store.Update(data =>
                 {
                     var job = data.TransferJobs.FirstOrDefault(x => x.Id == jobId);
-                    if (job is not null) { job.ArchiveSha256 = expectedSha256.ToLowerInvariant(); job.UpdateDate = DateTimeOffset.UtcNow; }
+                    if (job is not null)
+                    {
+                        job.ArchiveSha256 = expectedSha256.ToLowerInvariant();
+                        if (target is not null) job.ResolvedDestination = target.Destination;
+                        job.UpdateDate = DateTimeOffset.UtcNow;
+                    }
                 });
             }
             return new GatewayUploadResult(true, current, true, "Source-Transfer abgeschlossen.");
@@ -242,10 +354,108 @@ public sealed class GatewayTransferService(
         throw new InvalidOperationException($"Der Ziel-Object-Typ {target.Kind} wird auf der Secondary noch nicht unterstützt.");
     }
 
+    private StreamingPrimaryTarget? ResolveStreamingPrimaryTarget(long jobId)
+    {
+        var data = store.Read();
+        var job = data.TransferJobs.FirstOrDefault(item => item.Id == jobId);
+        if (job is null || job.Method != BackupMethod.Full) return null;
+        var target = data.Objects.FirstOrDefault(item => item.Id == job.TargetObjectId);
+        if (target is null || target.Kind is not (ObjectKind.LocalFolder or ObjectKind.Smb)) return null;
+        var instance = data.Instances.FirstOrDefault(item => item.Id == target.InstanceId);
+        if (instance?.Role != InstanceRole.Primary) return null;
+
+        var fileName = $"task-{job.TaskId}-{job.Id}{ArchiveExtension(job.Compression)}";
+        var destination = target.Kind == ObjectKind.LocalFolder
+            ? Path.Combine(target.Location, fileName)
+            : $"{target.Location.TrimEnd('\\', '/')}/{fileName}";
+        return new StreamingPrimaryTarget(target, store.GetSmbCredential(target.Id), fileName, destination);
+    }
+
+    private async Task<long> SyncStreamingTargetAsync(
+        StreamingPrimaryTarget target,
+        string sourcePath,
+        bool final,
+        CancellationToken cancellationToken)
+    {
+        if (target.Object.Kind == ObjectKind.LocalFolder)
+        {
+            Directory.CreateDirectory(target.Object.Location);
+            var partial = target.Destination + ".partial";
+            await CopyAvailableTailAsync(sourcePath, partial, cancellationToken);
+            var written = new FileInfo(partial).Length;
+            if (final) File.Move(partial, target.Destination, overwrite: true);
+            return written;
+        }
+
+        var uploaded = await smbClient.SyncPartialFileAsync(target.Object.Location, sourcePath, target.FileName, target.Credential, cancellationToken);
+        if (final) await smbClient.FinalizePartialFileAsync(target.Object.Location, target.FileName, target.Credential, cancellationToken);
+        return uploaded;
+    }
+
+    private async Task ResetStreamingTargetAsync(StreamingPrimaryTarget? target, CancellationToken cancellationToken)
+    {
+        if (target is null) return;
+        try
+        {
+            if (target.Object.Kind == ObjectKind.LocalFolder)
+            {
+                var partial = target.Destination + ".partial";
+                if (File.Exists(partial)) File.Delete(partial);
+                return;
+            }
+            await smbClient.DeleteUploadPartialAsync(target.Object.Location, target.FileName, target.Credential, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Streaming target checkpoint cleanup failed for {Destination}", target.Destination);
+        }
+    }
+
+    private void UpdatePipelineJob(long jobId, string transferId, long transferred, long written, long total, string checkpoint)
+    {
+        if (jobId <= 0) return;
+        var rate = _pipelineRates.GetOrAdd(transferId, _ => new PipelineRateState(DateTimeOffset.UtcNow));
+        var elapsed = Math.Max(0.001, (DateTimeOffset.UtcNow - rate.Started).TotalSeconds);
+        store.Update(data =>
+        {
+            var job = data.TransferJobs.FirstOrDefault(item => item.Id == jobId);
+            if (job is null) return;
+            job.State = "Running";
+            job.BytesTransferred = transferred;
+            job.BytesWritten = written;
+            if (total > 0) job.TotalBytes = total;
+            job.SpeedBytesPerSecond = (long)(transferred / elapsed);
+            job.WriteSpeedBytesPerSecond = (long)(written / elapsed);
+            job.CheckpointPath = checkpoint;
+            job.UpdateDate = DateTimeOffset.UtcNow;
+        });
+    }
+
+    private static async Task CopyAvailableTailAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken)
+    {
+        var sourceLength = new FileInfo(sourcePath).Length;
+        var offset = File.Exists(destinationPath) ? new FileInfo(destinationPath).Length : 0;
+        if (offset > sourceLength)
+        {
+            File.Delete(destinationPath);
+            offset = 0;
+        }
+        if (offset == sourceLength) return;
+
+        await using var input = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using var output = new FileStream(destinationPath, offset > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        input.Position = offset;
+        await input.CopyToAsync(output, 4 * 1024 * 1024, cancellationToken);
+        await output.FlushAsync(cancellationToken);
+    }
+
     private string UploadPartialPath(string transferId) => Path.Combine(archiveService.CacheDirectory, $"gateway-upload-{transferId}.tar.partial");
     private string UploadFinalPath(string transferId) => Path.Combine(archiveService.CacheDirectory, $"gateway-upload-{transferId}.tar");
     private string MetricsPath(string transferId) => Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.metrics.json");
     private static string ArchiveExtension(BackupCompression compression) => compression == BackupCompression.None ? ".tar" : ".tar.br";
+
+    private sealed record StreamingPrimaryTarget(BackupObject Object, (string Username, string Password)? Credential, string FileName, string Destination);
+    private sealed record PipelineRateState(DateTimeOffset Started);
 
     private static void EnsureTransferId(string transferId)
     {

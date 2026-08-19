@@ -73,7 +73,7 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         try
         {
             if (File.Exists(temporaryBuilding)) File.Delete(temporaryBuilding);
-            await using var file = new FileStream(temporaryBuilding, FileMode.Create, FileAccess.Write, FileShare.None, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await using var file = new FileStream(temporaryBuilding, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             storedCounter = new CountingWriteStream(file, () => Report());
             await using var compressor = CreateCompressionStream(storedCounter, compression);
             sourceCounter = new CountingWriteStream(compressor, () => Report());

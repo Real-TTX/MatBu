@@ -29,6 +29,9 @@ public static class SecondaryComposeGenerator
                 image: ghcr.io/real-ttx/matbu:latest
                 pull_policy: always
                 restart: unless-stopped
+                network_mode: bridge
+                extra_hosts:
+                  - "host.docker.internal:host-gateway"
                 environment:
                   MATBU_INSTANCE_ROLE: Secondary
                   MATBU_PRIMARY_ENDPOINT: {{yamlEndpoint}}

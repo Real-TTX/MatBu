@@ -94,6 +94,67 @@ public sealed class PersistentStoreConcurrencyTests
     }
 
     [Fact]
+    public void SecondaryProgress_StoresIndependentPipelineCounters()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "matbu-pipeline-progress-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var store = new PersistentStore(new TestHostEnvironment(directory));
+            const string token = "pipeline-secondary-token";
+            const string transferId = "pipeline-transfer";
+            store.Update(data =>
+            {
+                data.Instances.Add(new MatBuInstance
+                {
+                    Id = 2,
+                    Name = "Secondary",
+                    Role = InstanceRole.Secondary,
+                    Enabled = true,
+                    CreateDate = DateTimeOffset.UtcNow,
+                    UpdateDate = DateTimeOffset.UtcNow
+                });
+                store.SetInstanceToken(data, 2, token);
+                data.TransferJobs.Add(new TransferJob
+                {
+                    Id = 77,
+                    TaskId = 1,
+                    TransferId = transferId,
+                    State = "Running",
+                    CreateDate = DateTimeOffset.UtcNow,
+                    UpdateDate = DateTimeOffset.UtcNow
+                });
+            });
+
+            var commands = new SecondaryCommandService(store);
+            var commandId = commands.Queue(2, SecondaryCommandKind.ExportSource, transferId, new { });
+            var changed = commands.UpdateProgress(token, commandId, new SecondaryCommandProgress(
+                8_000,
+                12_000,
+                800,
+                "pipeline",
+                BytesRead: 10_000,
+                BytesWritten: 6_000,
+                ReadSpeedBytesPerSecond: 1_000,
+                WriteSpeedBytesPerSecond: 600));
+
+            Assert.True(changed);
+            var job = store.Read().TransferJobs.Single(item => item.Id == 77);
+            Assert.Equal(10_000, job.BytesRead);
+            Assert.Equal(8_000, job.BytesTransferred);
+            Assert.Equal(6_000, job.BytesWritten);
+            Assert.Equal(1_000, job.ReadSpeedBytesPerSecond);
+            Assert.Equal(800, job.SpeedBytesPerSecond);
+            Assert.Equal(600, job.WriteSpeedBytesPerSecond);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentFirstStartSeedsDatabaseOnlyOnce()
     {
         var directory = Path.Combine(Path.GetTempPath(), "matbu-tests-" + Guid.NewGuid().ToString("N"));

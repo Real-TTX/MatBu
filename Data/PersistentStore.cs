@@ -86,6 +86,10 @@ public sealed class PersistentStore
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN RetentionExpired INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN Compression TEXT NOT NULL DEFAULT 'None'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN EstimatedStoredBytes INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN BytesRead INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN BytesWritten INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ReadSpeedBytesPerSecond INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN WriteSpeedBytesPerSecond INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN SourceSelectionJson TEXT NOT NULL DEFAULT '[]'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyMode TEXT NOT NULL DEFAULT 'None'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyContainerNames TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }

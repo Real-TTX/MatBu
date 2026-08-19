@@ -191,6 +191,77 @@ public sealed class SmbClientService(ILogger<SmbClientService> logger)
             _ = await ExecuteAsync(smbPath, credential, $"del {Quote(replacementBackup)}", TestTimeout, cancellationToken);
     }
 
+    public async Task<long> SyncPartialFileAsync(
+        string location,
+        string localFile,
+        string remoteName,
+        (string Username, string Password)? credential,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(localFile))
+            throw new FileNotFoundException("Local SMB upload source was not found.", localFile);
+        if (string.IsNullOrWhiteSpace(remoteName) || remoteName.IndexOfAny(['/', '\\', '\r', '\n']) >= 0)
+            throw new ArgumentException("Invalid SMB target file name.", nameof(remoteName));
+
+        var smbPath = SmbPath.Parse(location);
+        var partialName = remoteName + ".partial";
+        var upload = await ExecuteAsync(
+            smbPath,
+            credential,
+            $"reput {Quote(localFile)} {Quote(partialName)}",
+            TransferTimeout,
+            cancellationToken);
+        if (!upload.Success)
+            throw new IOException(DescribeFailure(smbPath, "Streaming upload", upload.Details, credential is not null));
+        return new FileInfo(localFile).Length;
+    }
+
+    public async Task FinalizePartialFileAsync(
+        string location,
+        string remoteName,
+        (string Username, string Password)? credential,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(remoteName) || remoteName.IndexOfAny(['/', '\\', '\r', '\n']) >= 0)
+            throw new ArgumentException("Invalid SMB target file name.", nameof(remoteName));
+
+        var smbPath = SmbPath.Parse(location);
+        var partialName = remoteName + ".partial";
+        var replacementBackup = remoteName + ".matbu-previous";
+        _ = await ExecuteAsync(smbPath, credential, $"del {Quote(replacementBackup)}", TestTimeout, cancellationToken);
+        var movePrevious = await ExecuteAsync(
+            smbPath,
+            credential,
+            $"rename {Quote(remoteName)} {Quote(replacementBackup)}",
+            TestTimeout,
+            cancellationToken);
+        var hadPrevious = movePrevious.Success;
+        if (!hadPrevious && !IsNotFound(movePrevious.Details))
+            throw new IOException(DescribeFailure(smbPath, "Streaming finalize preparation", movePrevious.Details, credential is not null));
+
+        var rename = await ExecuteAsync(smbPath, credential, $"rename {Quote(partialName)} {Quote(remoteName)}", TestTimeout, cancellationToken);
+        if (!rename.Success)
+        {
+            if (hadPrevious)
+                _ = await ExecuteAsync(smbPath, credential, $"rename {Quote(replacementBackup)} {Quote(remoteName)}", TestTimeout, CancellationToken.None);
+            throw new IOException(DescribeFailure(smbPath, "Streaming upload finalize", rename.Details, credential is not null));
+        }
+        if (hadPrevious)
+            _ = await ExecuteAsync(smbPath, credential, $"del {Quote(replacementBackup)}", TestTimeout, cancellationToken);
+    }
+
+    public async Task DeleteUploadPartialAsync(
+        string location,
+        string remoteName,
+        (string Username, string Password)? credential,
+        CancellationToken cancellationToken)
+    {
+        var smbPath = SmbPath.Parse(location);
+        var result = await ExecuteAsync(smbPath, credential, $"del {Quote(remoteName + ".partial")}", TestTimeout, cancellationToken);
+        if (!result.Success && !IsNotFound(result.Details))
+            throw new IOException(DescribeFailure(smbPath, "Streaming checkpoint cleanup", result.Details, credential is not null));
+    }
+
     public async Task DownloadFileAsync(
         string location,
         string remoteName,

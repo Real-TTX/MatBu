@@ -5,7 +5,15 @@ using MatBu.Models;
 namespace MatBu.Services;
 
 public sealed record SecondaryCommandEnvelope(long Id, SecondaryCommandKind Kind, string TransferId, string PayloadJson);
-public sealed record SecondaryCommandProgress(long BytesTransferred, long TotalBytes, long SpeedBytesPerSecond, string? Checkpoint);
+public sealed record SecondaryCommandProgress(
+    long BytesTransferred,
+    long TotalBytes,
+    long SpeedBytesPerSecond,
+    string? Checkpoint,
+    long BytesRead = 0,
+    long BytesWritten = 0,
+    long ReadSpeedBytesPerSecond = 0,
+    long WriteSpeedBytesPerSecond = 0);
 
 public sealed class SecondaryCommandService(PersistentStore store)
 {
@@ -144,9 +152,14 @@ public sealed class SecondaryCommandService(PersistentStore store)
             var job = data.TransferJobs.FirstOrDefault(item => item.TransferId == command.TransferId && item.State == "Running");
             if (job is not null)
             {
-                job.BytesTransferred = progress.BytesTransferred;
-                job.TotalBytes = progress.TotalBytes;
+                job.BytesRead = Math.Max(job.BytesRead, progress.BytesRead);
+                job.BytesTransferred = Math.Max(job.BytesTransferred, progress.BytesTransferred);
+                job.BytesWritten = Math.Max(job.BytesWritten, progress.BytesWritten);
+                if (progress.TotalBytes > 0) job.TotalBytes = progress.TotalBytes;
+                job.ReadSpeedBytesPerSecond = progress.ReadSpeedBytesPerSecond;
                 job.SpeedBytesPerSecond = progress.SpeedBytesPerSecond;
+                if (progress.WriteSpeedBytesPerSecond > 0 || progress.BytesWritten > 0)
+                    job.WriteSpeedBytesPerSecond = progress.WriteSpeedBytesPerSecond;
                 job.CheckpointPath = progress.Checkpoint ?? job.CheckpointPath;
                 job.UpdateDate = DateTimeOffset.UtcNow;
             }

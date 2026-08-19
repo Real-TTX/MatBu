@@ -11,6 +11,8 @@ public sealed class SecondaryComposeGeneratorTests
         var compose = SecondaryComposeGenerator.Generate("https://backup.example.de/", "secret-token");
 
         Assert.Contains("image: ghcr.io/real-ttx/matbu:latest", compose);
+        Assert.Contains("network_mode: bridge", compose);
+        Assert.Contains("host.docker.internal:host-gateway", compose);
         Assert.Contains("MATBU_INSTANCE_ROLE: Secondary", compose);
         Assert.Contains("MATBU_PRIMARY_ENDPOINT: \"https://backup.example.de\"", compose);
         Assert.Contains("MATBU_INSTANCE_TOKEN: \"secret-token\"", compose);

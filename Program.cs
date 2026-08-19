@@ -198,6 +198,21 @@ app.MapPost("/api/secondary/commands/{commandId:long}/progress", (long commandId
     return changed ? Results.Ok() : Results.NotFound();
 });
 app.MapGet("/api/secondary/transfers/{transferId}/source-status", async (string transferId, string? sha256, GatewayTransferService transfers, CancellationToken cancellationToken) => Results.Ok(new { offset = await transfers.GetSourceOffsetAsync(transferId, sha256 ?? "", cancellationToken) }));
+app.MapGet("/api/secondary/transfers/{transferId}/stream-status", (string transferId, GatewayTransferService transfers) =>
+    Results.Ok(transfers.GetIncomingSourceStatus(transferId)));
+app.MapGet("/api/secondary/transfers/{transferId}/stream", (string transferId, long offset, long? maxBytes, GatewayTransferService transfers, HttpContext context) =>
+{
+    var status = transfers.GetIncomingSourceStatus(transferId);
+    if (offset < 0 || offset > status.AvailableBytes)
+    {
+        context.Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+        context.Response.Headers.ContentRange = $"bytes */{status.AvailableBytes}";
+        return Results.StatusCode(StatusCodes.Status416RangeNotSatisfiable);
+    }
+    var length = Math.Min(Math.Clamp(maxBytes ?? 4 * 1024 * 1024, 1, 16 * 1024 * 1024), status.AvailableBytes - offset);
+    context.Response.ContentLength = length;
+    return Results.Stream(transfers.OpenIncomingSourceRange(transferId, offset, length), "application/octet-stream");
+});
 app.MapPut("/api/secondary/transfers/{transferId}/source", async (string transferId, HttpContext context, GatewayTransferService transfers, CancellationToken cancellationToken) =>
 {
     if (!long.TryParse(context.Request.Headers["X-MatBu-Transfer-Offset"], out var offset) || !long.TryParse(context.Request.Headers["X-MatBu-Transfer-Job-Id"], out var jobId) || !long.TryParse(context.Request.Headers["X-MatBu-Transfer-Total"], out var total)) return Results.BadRequest(new { message = "Transfer-Metadaten fehlen." });

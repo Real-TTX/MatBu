@@ -4,19 +4,35 @@
 @{
     ViewData["Title"] = Model.Id is null ? "Job erstellen" : "Job bearbeiten";
     ViewData["UserName"] = Model.CurrentUser?.UserName;
+    var sourceObjects = Model.Objects.Where(item => item.Direction != ObjectDirection.Target).ToList();
+    var targetObjects = Model.Objects.Where(item => item.Direction != ObjectDirection.Source).ToList();
+    var sourceOnlyObjects = Model.Objects.Where(item => item.Direction == ObjectDirection.Source).ToList();
+    var weekdays = new[]
+    {
+        (Value: nameof(DayOfWeek.Monday), Short: "Mo", Name: "Montag"),
+        (Value: nameof(DayOfWeek.Tuesday), Short: "Di", Name: "Dienstag"),
+        (Value: nameof(DayOfWeek.Wednesday), Short: "Mi", Name: "Mittwoch"),
+        (Value: nameof(DayOfWeek.Thursday), Short: "Do", Name: "Donnerstag"),
+        (Value: nameof(DayOfWeek.Friday), Short: "Fr", Name: "Freitag"),
+        (Value: nameof(DayOfWeek.Saturday), Short: "Sa", Name: "Samstag"),
+        (Value: nameof(DayOfWeek.Sunday), Short: "So", Name: "Sonntag")
+    };
 }
 
 <div class="page-heading">
     <div><p class="eyebrow">Backup-Job</p><h1>@ViewData["Title"]</h1><p>Definiere Quelle, Ziel, Methode, Zeitplan und Retention.</p></div>
 </div>
 
-<form method="post" class="panel form">
+<form method="post" class="panel form task-editor">
     <div asp-validation-summary="All" class="validation-summary"></div>
     @if (Model.Error is not null)
     {
         <div class="login-error">@Model.Error</div>
     }
     <div class="form-grid">
+        <div class="task-section-heading">
+            <span aria-hidden="true">A</span><div><h2>Allgemein</h2><p>Name und optionale Tags für Filter und Kundenzuordnung.</p></div>
+        </div>
         <div class="field">
             <label asp-for="Input.Name">Name</label>
             <input asp-for="Input.Name" required />
@@ -35,53 +51,28 @@
             </div>
             <span asp-validation-for="SelectedLabelIds" class="field-error"></span>
         </div>
-        <div class="field schedule-kind-field">
-            <label asp-for="ScheduleKind">Zeitplan</label>
-            <select asp-for="ScheduleKind" id="schedule-kind">
-                <option value="Interval">Alle X Minuten/Stunden</option>
-                <option value="Daily">Täglich</option>
-                <option value="Weekly">Wöchentlich</option>
-            </select>
-            <span asp-validation-for="ScheduleKind" class="field-error"></span>
-        </div>
-        <div class="field" id="schedule-interval-field">
-            <label asp-for="ScheduleInterval">Intervall</label>
-            <div class="schedule-inline">
-                <input asp-for="ScheduleInterval" type="number" min="1" max="1440" inputmode="numeric" />
-                <select asp-for="ScheduleIntervalUnit" id="schedule-interval-unit">
-                    <option value="Minutes">Minuten</option>
-                    <option value="Hours">Stunden</option>
-                </select>
-            </div>
-            <small>Minuten: 1–1440 · Stunden: 1–168</small>
-        </div>
-        <div class="field" id="schedule-time-field">
-            <label asp-for="ScheduleTime">Uhrzeit</label>
-            <input asp-for="ScheduleTime" type="time" step="60" />
-        </div>
-        <div class="field" id="schedule-weekday-field">
-            <label asp-for="ScheduleWeekday">Wochentag</label>
-            <select asp-for="ScheduleWeekday">
-                <option value="Monday">Montag</option>
-                <option value="Tuesday">Dienstag</option>
-                <option value="Wednesday">Mittwoch</option>
-                <option value="Thursday">Donnerstag</option>
-                <option value="Friday">Freitag</option>
-                <option value="Saturday">Samstag</option>
-                <option value="Sunday">Sonntag</option>
-            </select>
+        <div class="task-section-heading">
+            <span aria-hidden="true">↔</span><div><h2>Datenweg</h2><p>Wo liegen die Quelldaten und welche Instanz schreibt sie an welches Ziel?</p></div>
         </div>
         <div class="field">
             <label asp-for="Input.SourceId">Quelle</label>
             <select asp-for="Input.SourceId" id="source-object">
                 <option value="">Bitte wählen</option>
-                @foreach (var item in Model.Objects.Where(x => x.Direction != ObjectDirection.Target))
+                @foreach (var instance in Model.Instances)
                 {
-                    <option value="@item.Id" data-kind="@item.Kind">@item.Name</option>
+                    var items = sourceObjects.Where(item => item.InstanceId == instance.Id).ToList();
+                    if (items.Count == 0) continue;
+                    <optgroup label="@instance.Name · @instance.Role">
+                        @foreach (var item in items)
+                        {
+                            <option value="@item.Id" data-kind="@item.Kind">@item.Name · @item.Kind</option>
+                        }
+                    </optgroup>
                 }
             </select>
+            <small>Die Instanz zeigt, in welchem Netzwerk der Zugriff ausgeführt wird.</small>
         </div>
-        <div class="field source-selection-field">
+        <div class="field source-selection-field" id="source-selection-field">
             <label>Zu sichernde Inhalte</label>
             <button class="source-picker-input" id="source-picker-open" type="button">
                 <span><strong id="source-picker-title">Gesamtes Object</strong><small id="source-picker-summary">Alle Ordner und Dateien werden gesichert</small></span>
@@ -96,11 +87,39 @@
             <label asp-for="Input.TargetId">Ziel</label>
             <select asp-for="Input.TargetId" id="target-object">
                 <option value="">Bitte wählen</option>
-                @foreach (var item in Model.Objects.Where(x => x.Direction != ObjectDirection.Source))
+                @foreach (var instance in Model.Instances)
                 {
-                    <option value="@item.Id" data-kind="@item.Kind">@item.Name</option>
+                    var items = targetObjects.Where(item => item.InstanceId == instance.Id).ToList();
+                    if (items.Count == 0) continue;
+                    <optgroup label="@instance.Name · @instance.Role">
+                        @foreach (var item in items)
+                        {
+                            <option value="@item.Id" data-kind="@item.Kind">@item.Name · @item.Kind</option>
+                        }
+                    </optgroup>
+                }
+                @if (sourceOnlyObjects.Count > 0)
+                {
+                    <optgroup label="Nicht als Ziel freigegeben">
+                        @foreach (var item in sourceOnlyObjects)
+                        {
+                            var instanceName = Model.Instances.FirstOrDefault(instance => instance.Id == item.InstanceId)?.Name ?? "Unbekannte Instanz";
+                            <option disabled>@item.Name · @instanceName · nur Quelle</option>
+                        }
+                    </optgroup>
                 }
             </select>
+            @if (targetObjects.Count == 0)
+            {
+                <small class="field-warning">Kein Ziel freigegeben. Öffne <a asp-page="/Objects/Index">Objects</a> und stelle beim gewünschten SMB-Object die Richtung auf „Ziel“ oder „Beides“.</small>
+            }
+            else
+            {
+                <small>Ziele sind nach der Instanz gruppiert, die auf das jeweilige Netzwerk zugreift. <a asp-page="/Objects/Index">Objects verwalten</a></small>
+            }
+        </div>
+        <div class="task-section-heading">
+            <span aria-hidden="true">◆</span><div><h2>Backupverfahren</h2><p>Nur passende Optionen zur gewählten Methode werden angezeigt.</p></div>
         </div>
         <div class="field">
             <label asp-for="Input.Method">Backup-Methode</label>
@@ -108,10 +127,10 @@
                 <option value="ReverseIncremental">Reverse Incremental (empfohlen)</option>
                 <option value="ForwardIncremental">Forward Incremental</option>
                 <option value="Differential">Differential</option>
-                <option value="ProxmoxNative">Proxmox Native (PBS/CBT)</option>
+                <option value="ProxmoxNative" id="proxmox-native-option">Proxmox Native (PBS/CBT)</option>
                 <option value="Full">Full</option>
             </select>
-            <small>Reverse: aktueller Stand direkt lesbar. Forward: Änderungen zum Vorgänger. Differential: Änderungen zur ersten Baseline.</small>
+            <small id="backup-method-help">Reverse Incremental hält den aktuellen Stand direkt lesbar und überträgt nur geänderte Blöcke.</small>
             <span asp-validation-for="Input.Method" class="field-error"></span>
         </div>
         <div class="field" id="chunk-size-field">
@@ -138,7 +157,10 @@
         </div>
         @if (Model.CanManageConsistency)
         {
-            <div class="field consistency-main-field">
+            <div class="task-section-heading" id="consistency-section-heading">
+                <span aria-hidden="true">✓</span><div><h2>Anwendungskonsistenz</h2><p>Nur für Full-Backups: Container während der Aufnahme pausieren oder Hooks ausführen.</p></div>
+            </div>
+            <div class="field consistency-main-field" data-consistency-section>
                 <label asp-for="Input.ConsistencyMode">Anwendungskonsistenz</label>
                 <select asp-for="Input.ConsistencyMode" id="consistency-mode">
                     <option value="None">Keine · Crash-konsistent</option>
@@ -148,24 +170,24 @@
                 <small>Die Anwendung wird nur während der lokalen Quellaufnahme angehalten – nicht während der Übertragung.</small>
                 <span asp-validation-for="Input.ConsistencyMode" class="field-error"></span>
             </div>
-            <div class="field consistency-detail-field" data-consistency-detail>
+            <div class="field consistency-detail-field" data-consistency-section data-consistency-detail>
                 <label asp-for="Input.ConsistencyContainerNames">Docker-Container</label>
                 <input asp-for="Input.ConsistencyContainerNames" placeholder="z. B. vmware-backup oder db,app" />
                 <small>Pause: mehrere Namen mit Komma trennen. Exec: genau ein Container.</small>
                 <span asp-validation-for="Input.ConsistencyContainerNames" class="field-error"></span>
             </div>
-            <div class="field consistency-exec-field" data-consistency-exec>
+            <div class="field consistency-exec-field" data-consistency-section data-consistency-exec>
                 <label asp-for="Input.PreBackupCommand">Pre-Backup-Kommando</label>
                 <input asp-for="Input.PreBackupCommand" placeholder="z. B. pg_start_backup" autocomplete="off" />
                 <small>Wird über <code>/bin/sh -c</code> innerhalb des Containers ausgeführt.</small>
                 <span asp-validation-for="Input.PreBackupCommand" class="field-error"></span>
             </div>
-            <div class="field consistency-exec-field" data-consistency-exec>
+            <div class="field consistency-exec-field" data-consistency-section data-consistency-exec>
                 <label asp-for="Input.PostBackupCommand">Post-Backup-Kommando</label>
                 <input asp-for="Input.PostBackupCommand" placeholder="Anwendung wieder freigeben" autocomplete="off" />
                 <small>Läuft auch dann als Cleanup, wenn die Quellaufnahme fehlschlägt.</small>
             </div>
-            <div class="field consistency-detail-field" data-consistency-detail>
+            <div class="field consistency-detail-field" data-consistency-section data-consistency-detail>
                 <label asp-for="Input.ConsistencyTimeoutSeconds">Hook-Timeout</label>
                 <div class="input-suffix"><input asp-for="Input.ConsistencyTimeoutSeconds" type="number" min="5" max="900" /><span>Sekunden</span></div>
                 <span asp-validation-for="Input.ConsistencyTimeoutSeconds" class="field-error"></span>
@@ -179,6 +201,54 @@
             <input asp-for="Input.PostBackupCommand" type="hidden" />
             <input asp-for="Input.ConsistencyTimeoutSeconds" type="hidden" />
         }
+        <div class="task-section-heading">
+            <span aria-hidden="true">◷</span><div><h2>Zeitplan</h2><p>Einfaches Intervall, täglich oder an mehreren ausgewählten Wochentagen.</p></div>
+        </div>
+        <section class="schedule-editor" aria-labelledby="schedule-heading">
+            <div class="schedule-editor-heading">
+                <div><label id="schedule-heading">Automatische Ausführung</label><small>Der nächste Start wird nach dem Speichern direkt berechnet.</small></div>
+                <strong id="schedule-summary" aria-live="polite"></strong>
+            </div>
+            <div class="schedule-mode-options">
+                <label class="schedule-mode"><input asp-for="ScheduleKind" type="radio" value="Interval" /><span><strong>Intervall</strong><small>Alle X Minuten oder Stunden</small></span></label>
+                <label class="schedule-mode"><input asp-for="ScheduleKind" type="radio" value="Daily" /><span><strong>Täglich</strong><small>Jeden Tag zur gleichen Uhrzeit</small></span></label>
+                <label class="schedule-mode"><input asp-for="ScheduleKind" type="radio" value="Weekly" /><span><strong>Wochentage</strong><small>Ein oder mehrere Tage zur gleichen Uhrzeit</small></span></label>
+            </div>
+            <div class="schedule-details">
+                <div class="field" id="schedule-interval-field">
+                    <label asp-for="ScheduleInterval">Ausführen alle</label>
+                    <div class="schedule-inline">
+                        <input asp-for="ScheduleInterval" type="number" min="1" max="1440" inputmode="numeric" />
+                        <select asp-for="ScheduleIntervalUnit" id="schedule-interval-unit">
+                            <option value="Minutes">Minuten</option>
+                            <option value="Hours">Stunden</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field weekday-field" id="schedule-weekday-field">
+                    <label>An diesen Tagen</label>
+                    <input type="hidden" name="ScheduleWeekdays" value="" />
+                    <div class="weekday-selector">
+                        @foreach (var day in weekdays)
+                        {
+                            <label class="weekday-choice" title="@day.Name">
+                                <input type="checkbox" name="ScheduleWeekdays" value="@day.Value" checked="@Model.ScheduleWeekdays.Contains(day.Value)" />
+                                <span>@day.Short</span>
+                            </label>
+                        }
+                    </div>
+                    <small>Mehrfachauswahl möglich, zum Beispiel Dienstag und Sonntag.</small>
+                </div>
+                <div class="field" id="schedule-time-field">
+                    <label asp-for="ScheduleTime">Start um</label>
+                    <input asp-for="ScheduleTime" id="schedule-time" type="time" step="60" />
+                </div>
+            </div>
+            <span asp-validation-for="ScheduleKind" class="field-error"></span>
+        </section>
+        <div class="task-section-heading">
+            <span aria-hidden="true">↻</span><div><h2>Aufbewahrung und Wiederholung</h2><p>Versionen begrenzen und festlegen, wie MatBu nach Verbindungsfehlern erneut versucht.</p></div>
+        </div>
         <div class="field">
             <label asp-for="Input.Retention">Retention</label>
             <select asp-for="Input.Retention">
@@ -190,21 +260,22 @@
         </div>
         <div class="field">
             <label asp-for="Input.MaxRetryAttempts">Maximale Versuche</label>
-            <input asp-for="Input.MaxRetryAttempts" type="number" min="1" max="20" inputmode="numeric" />
+            <input asp-for="Input.MaxRetryAttempts" id="max-retry-attempts" type="number" min="1" max="20" inputmode="numeric" />
             <small>Inklusive Erstversuch. Mit 1 sind automatische Wiederholungen deaktiviert.</small>
             <span asp-validation-for="Input.MaxRetryAttempts" class="field-error"></span>
         </div>
-        <div class="field">
+        <div class="field" id="retry-delay-field">
             <label asp-for="Input.RetryDelayMinutes">Retry-Basiswartezeit</label>
             <div class="input-suffix"><input asp-for="Input.RetryDelayMinutes" type="number" min="1" max="1440" inputmode="numeric" /><span>Minuten</span></div>
             <small>Die Wartezeit verdoppelt sich nach jedem fehlgeschlagenen Versuch.</small>
             <span asp-validation-for="Input.RetryDelayMinutes" class="field-error"></span>
         </div>
-        <div class="field">
-            <label><input asp-for="Input.Enabled" /> Aktiviert</label>
+        <div class="field job-enabled-field">
+            <label class="toggle-label"><input asp-for="Input.Enabled" /> Job aktiviert</label>
+            <small>Deaktivierte Jobs können weiterhin manuell gestartet werden.</small>
         </div>
     </div>
-    <div class="form-actions">
+    <div class="form-actions button-row task-form-actions">
         <button class="button primary" type="submit">Speichern</button>
         <a class="button" asp-page="/Tasks/Index">Zurück</a>
     </div>
@@ -229,6 +300,9 @@
         const chunkSize = document.getElementById('chunk-size');
         const compressionField = document.getElementById('compression-field');
         const compression = document.getElementById('compression');
+        const methodHelp = document.getElementById('backup-method-help');
+        const nativeOption = document.getElementById('proxmox-native-option');
+        const sourceSelectionField = document.getElementById('source-selection-field');
         if (!method || !chunkField || !chunkSize || !compressionField || !compression) return;
 
         const updateChunkSelection = () => {
@@ -238,33 +312,61 @@
             chunkSize.disabled = !isChunked;
             compressionField.hidden = !isFull;
             compression.disabled = !isFull;
+            if (methodHelp) methodHelp.textContent = ({
+                ReverseIncremental: 'Aktueller Stand bleibt direkt lesbar; nur geänderte Blöcke werden übertragen.',
+                ForwardIncremental: 'Jede Version speichert die Änderungen zur unmittelbar vorherigen Version.',
+                Differential: 'Jede Version speichert die Änderungen seit dem letzten Full-Stand.',
+                ProxmoxNative: 'Proxmox erstellt das Backup nativ und übergibt es an den konfigurierten PBS-Speicher.',
+                Full: 'Jeder Lauf erzeugt ein vollständiges, optional komprimiertes Archiv.'
+            })[method.value] || '';
         };
 
         method.addEventListener('change', updateChunkSelection);
         const updateNativeRoute = () => {
             const sourceKind = source?.selectedOptions?.[0]?.dataset.kind;
             const targetKind = target?.selectedOptions?.[0]?.dataset.kind;
-            if (sourceKind === 'Proxmox' && targetKind === 'ProxmoxBackupServer') method.value = 'ProxmoxNative';
-            updateChunkSelection();
+            const nativeRoute = sourceKind === 'Proxmox' && targetKind === 'ProxmoxBackupServer';
+            if (nativeOption) {
+                nativeOption.hidden = !nativeRoute;
+                nativeOption.disabled = !nativeRoute;
+            }
+            if (nativeRoute) method.value = 'ProxmoxNative';
+            else if (method.value === 'ProxmoxNative') method.value = 'ReverseIncremental';
+            if (sourceSelectionField) sourceSelectionField.hidden = !source?.value || !['LocalFolder', 'Smb', 'DockerVolume', 'Proxmox'].includes(sourceKind);
+            method.dispatchEvent(new Event('change'));
         };
         source?.addEventListener('change', updateNativeRoute);
         target?.addEventListener('change', updateNativeRoute);
-        updateChunkSelection();
+        updateNativeRoute();
     })();
 
     (() => {
         const mode = document.getElementById('consistency-mode');
         const method = document.getElementById('backup-method');
         if (!mode || !method) return;
+        const heading = document.getElementById('consistency-section-heading');
+        const sectionFields = document.querySelectorAll('[data-consistency-section]');
         const details = document.querySelectorAll('[data-consistency-detail]');
         const execFields = document.querySelectorAll('[data-consistency-exec]');
         const update = () => {
+            const full = method.value === 'Full';
+            if (heading) heading.hidden = !full;
+            sectionFields.forEach(element => {
+                element.hidden = !full;
+                element.querySelectorAll('input, select').forEach(control => control.disabled = !full);
+            });
+            if (!full) return;
             const enabled = mode.value !== 'None';
             const exec = mode.value === 'DockerExec';
-            details.forEach(element => element.hidden = !enabled);
-            execFields.forEach(element => element.hidden = !exec);
-            if (enabled && method.value !== 'Full') mode.setCustomValidity('Anwendungskonsistenz ist derzeit nur mit Full-Backups möglich.');
-            else mode.setCustomValidity('');
+            details.forEach(element => {
+                element.hidden = !enabled;
+                element.querySelectorAll('input, select').forEach(control => control.disabled = !enabled);
+            });
+            execFields.forEach(element => {
+                element.hidden = !exec;
+                element.querySelectorAll('input, select').forEach(control => control.disabled = !exec);
+            });
+            mode.setCustomValidity('');
         };
         mode.addEventListener('change', update);
         method.addEventListener('change', update);
@@ -272,26 +374,57 @@
     })();
 
     (() => {
-        const kind = document.getElementById('schedule-kind');
+        const kinds = [...document.querySelectorAll('input[name="ScheduleKind"]')];
         const intervalField = document.getElementById('schedule-interval-field');
         const timeField = document.getElementById('schedule-time-field');
         const weekdayField = document.getElementById('schedule-weekday-field');
         const intervalUnit = document.getElementById('schedule-interval-unit');
         const intervalInput = document.getElementById('ScheduleInterval');
-        if (!kind || !intervalField || !timeField || !weekdayField) return;
+        const timeInput = document.getElementById('schedule-time');
+        const weekdayInputs = [...document.querySelectorAll('input[type="checkbox"][name="ScheduleWeekdays"]')];
+        const weekdaySentinel = document.querySelector('input[type="hidden"][name="ScheduleWeekdays"]');
+        const summary = document.getElementById('schedule-summary');
+        if (!kinds.length || !intervalField || !timeField || !weekdayField) return;
 
         const updateScheduleFields = () => {
-            const interval = kind.value === 'Interval';
+            const kind = kinds.find(input => input.checked)?.value ?? 'Daily';
+            const interval = kind === 'Interval';
             intervalField.hidden = !interval;
             timeField.hidden = interval;
-            weekdayField.hidden = kind.value !== 'Weekly';
+            weekdayField.hidden = kind !== 'Weekly';
+            weekdayInputs.forEach(input => input.disabled = kind !== 'Weekly');
+            if (weekdaySentinel) weekdaySentinel.disabled = kind !== 'Weekly';
             if (intervalInput && intervalUnit)
                 intervalInput.max = intervalUnit.value === 'Minutes' ? '1440' : '168';
+            const selectedDays = weekdayInputs.filter(input => input.checked).map(input => input.closest('label')?.title || input.value);
+            weekdayInputs[0]?.setCustomValidity(kind === 'Weekly' && selectedDays.length === 0 ? 'Bitte mindestens einen Wochentag auswählen.' : '');
+            if (!summary) return;
+            if (interval) {
+                const amount = intervalInput?.value || '1';
+                const unit = intervalUnit?.selectedOptions?.[0]?.textContent?.toLowerCase() || 'Stunden';
+                summary.textContent = `Alle ${amount} ${unit}`;
+            } else if (kind === 'Weekly') {
+                summary.textContent = `${selectedDays.join(', ') || 'Keine Tage'} · ${timeInput?.value || '03:00'} Uhr`;
+            } else {
+                summary.textContent = `Täglich · ${timeInput?.value || '02:00'} Uhr`;
+            }
         };
 
-        kind.addEventListener('change', updateScheduleFields);
+        kinds.forEach(input => input.addEventListener('change', updateScheduleFields));
         intervalUnit?.addEventListener('change', updateScheduleFields);
+        intervalInput?.addEventListener('input', updateScheduleFields);
+        timeInput?.addEventListener('input', updateScheduleFields);
+        weekdayInputs.forEach(input => input.addEventListener('change', updateScheduleFields));
         updateScheduleFields();
+    })();
+
+    (() => {
+        const attempts = document.getElementById('max-retry-attempts');
+        const delayField = document.getElementById('retry-delay-field');
+        if (!attempts || !delayField) return;
+        const update = () => delayField.hidden = Number(attempts.value) <= 1;
+        attempts.addEventListener('input', update);
+        update();
     })();
 </script>
 

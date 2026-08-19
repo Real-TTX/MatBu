@@ -9,7 +9,13 @@ public sealed record BackupScheduleDefinition(
     BackupScheduleKind Kind,
     int IntervalValue,
     TimeOnly Time,
-    DayOfWeek DayOfWeek);
+    DayOfWeek DayOfWeek,
+    IReadOnlyList<DayOfWeek>? DaysOfWeek = null)
+{
+    public IReadOnlyList<DayOfWeek> EffectiveDays => DaysOfWeek is { Count: > 0 }
+        ? DaysOfWeek
+        : [DayOfWeek];
+}
 
 public static partial class BackupSchedule
 {
@@ -49,11 +55,14 @@ public static partial class BackupSchedule
             schedule.Contains("chentlich", StringComparison.OrdinalIgnoreCase))
         {
             if (!TryReadTime(schedule, new TimeOnly(3, 0), out var time)) return false;
+            var days = ReadDays(schedule);
+            if (days.Count == 0) days = [DayOfWeek.Sunday];
             definition = definition with
             {
                 Kind = BackupScheduleKind.Weekly,
                 Time = time,
-                DayOfWeek = ReadDay(schedule)
+                DayOfWeek = days[0],
+                DaysOfWeek = days
             };
             return true;
         }
@@ -67,6 +76,22 @@ public static partial class BackupSchedule
         string? intervalUnit,
         string? timeValue,
         string? weekday,
+        out string schedule,
+        out string? error) => TryBuild(
+            kind,
+            intervalValue,
+            intervalUnit,
+            timeValue,
+            string.IsNullOrWhiteSpace(weekday) ? [] : [weekday],
+            out schedule,
+            out error);
+
+    public static bool TryBuild(
+        string? kind,
+        int intervalValue,
+        string? intervalUnit,
+        string? timeValue,
+        IReadOnlyCollection<string>? weekdays,
         out string schedule,
         out string? error)
     {
@@ -96,12 +121,19 @@ public static partial class BackupSchedule
 
         if (string.Equals(kind, "Weekly", StringComparison.OrdinalIgnoreCase))
         {
-            if (!Enum.TryParse<DayOfWeek>(weekday, true, out var day))
+            var days = (weekdays ?? [])
+                .Select(value => Enum.TryParse<DayOfWeek>(value, true, out var day) ? day : (DayOfWeek?)null)
+                .Where(day => day is not null)
+                .Select(day => day!.Value)
+                .Distinct()
+                .OrderBy(DaySortOrder)
+                .ToList();
+            if (days.Count == 0)
             {
-                error = "Bitte einen gültigen Wochentag auswählen.";
+                error = "Bitte mindestens einen Wochentag auswählen.";
                 return false;
             }
-            schedule = Format(new BackupScheduleDefinition(BackupScheduleKind.Weekly, 0, time, day));
+            schedule = Format(new BackupScheduleDefinition(BackupScheduleKind.Weekly, 0, time, days[0], days));
             return true;
         }
 
@@ -119,16 +151,17 @@ public static partial class BackupSchedule
 
         var zone = timeZone ?? ResolveTimeZone();
         var localAfter = TimeZoneInfo.ConvertTime(afterUtc, zone);
-        var candidateDate = localAfter.Date;
         if (definition.Kind == BackupScheduleKind.Weekly)
         {
-            var daysAhead = ((int)definition.DayOfWeek - (int)localAfter.DayOfWeek + 7) % 7;
-            candidateDate = candidateDate.AddDays(daysAhead);
+            return definition.EffectiveDays
+                .Distinct()
+                .Select(day => GetNextWeeklyOccurrence(day, definition.Time, localAfter, zone))
+                .Min();
         }
 
-        var localCandidate = DateTime.SpecifyKind(candidateDate + definition.Time.ToTimeSpan(), DateTimeKind.Unspecified);
+        var localCandidate = DateTime.SpecifyKind(localAfter.Date + definition.Time.ToTimeSpan(), DateTimeKind.Unspecified);
         if (localCandidate <= localAfter.DateTime)
-            localCandidate = localCandidate.AddDays(definition.Kind == BackupScheduleKind.Weekly ? 7 : 1);
+            localCandidate = localCandidate.AddDays(1);
         if (zone.IsInvalidTime(localCandidate)) localCandidate = localCandidate.AddHours(1);
         return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(localCandidate, zone), TimeSpan.Zero);
     }
@@ -145,7 +178,7 @@ public static partial class BackupSchedule
     {
         BackupScheduleKind.IntervalMinutes => $"Alle {definition.IntervalValue} {(definition.IntervalValue == 1 ? "Minute" : "Minuten")}",
         BackupScheduleKind.IntervalHours => $"Alle {definition.IntervalValue} {(definition.IntervalValue == 1 ? "Stunde" : "Stunden")}",
-        BackupScheduleKind.Weekly => $"Wöchentlich · {DayLabel(definition.DayOfWeek)} {definition.Time:HH\\:mm}",
+        BackupScheduleKind.Weekly => $"Wöchentlich · {string.Join(", ", definition.EffectiveDays.Distinct().OrderBy(DaySortOrder).Select(DayLabel))} {definition.Time:HH\\:mm}",
         _ => $"Täglich · {definition.Time:HH\\:mm}"
     };
 
@@ -170,11 +203,16 @@ public static partial class BackupSchedule
                TimeOnly.TryParseExact(match.Value, "H:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out time);
     }
 
-    private static DayOfWeek ReadDay(string value)
+    private static List<DayOfWeek> ReadDays(string value)
     {
-        var match = DayPattern().Match(value);
-        if (!match.Success) return DayOfWeek.Sunday;
-        return match.Value.ToLowerInvariant() switch
+        return DayPattern().Matches(value)
+            .Select(match => ParseDay(match.Value))
+            .Distinct()
+            .OrderBy(DaySortOrder)
+            .ToList();
+    }
+
+    private static DayOfWeek ParseDay(string value) => value.ToLowerInvariant() switch
         {
             "mo" or "mon" => DayOfWeek.Monday,
             "di" or "tue" => DayOfWeek.Tuesday,
@@ -184,7 +222,18 @@ public static partial class BackupSchedule
             "sa" or "sat" => DayOfWeek.Saturday,
             _ => DayOfWeek.Sunday
         };
+
+    private static DateTimeOffset GetNextWeeklyOccurrence(DayOfWeek day, TimeOnly time, DateTimeOffset localAfter, TimeZoneInfo zone)
+    {
+        var daysAhead = ((int)day - (int)localAfter.DayOfWeek + 7) % 7;
+        var candidateDate = localAfter.Date.AddDays(daysAhead);
+        var localCandidate = DateTime.SpecifyKind(candidateDate + time.ToTimeSpan(), DateTimeKind.Unspecified);
+        if (localCandidate <= localAfter.DateTime) localCandidate = localCandidate.AddDays(7);
+        if (zone.IsInvalidTime(localCandidate)) localCandidate = localCandidate.AddHours(1);
+        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(localCandidate, zone), TimeSpan.Zero);
     }
+
+    private static int DaySortOrder(DayOfWeek day) => day == DayOfWeek.Sunday ? 7 : (int)day;
 
     private static string DayLabel(DayOfWeek value) => value switch
     {

@@ -14,7 +14,7 @@ public class EditModel(
     public long? Id { get; set; }
 
     [BindProperty]
-    public BackupObject Input { get; set; } = new();
+    public BackupObject Input { get; set; } = new() { Direction = ObjectDirection.Both };
 
     [BindProperty]
     public string? SmbUsername { get; set; }
@@ -35,7 +35,7 @@ public class EditModel(
         Instances = data.Instances;
         if (Id is not null)
         {
-            Input = data.Objects.FirstOrDefault(item => item.Id == Id) ?? new BackupObject();
+            Input = data.Objects.FirstOrDefault(item => item.Id == Id) ?? new BackupObject { Direction = ObjectDirection.Both };
             var credential = Store.GetSmbCredential(Id.Value);
             SmbUsername = credential?.Username;
             HasStoredSmbCredential = credential is not null;

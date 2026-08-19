@@ -13,6 +13,8 @@ public enum SecondaryCommandKind
     ObjectTest,
     ExportSource,
     ImportTarget,
+    ImportStreamingTarget,
+    StreamSourceToTarget,
     ExportArchive,
     ApplyRestore,
     PrepareIncrementalSource,
@@ -81,9 +83,13 @@ public sealed class TransferJob
     public string TransferId { get; set; } = "";
     public int Attempt { get; set; } = 1;
     public string State { get; set; } = "Running";
+    public long BytesRead { get; set; }
     public long BytesTransferred { get; set; }
+    public long BytesWritten { get; set; }
     public long TotalBytes { get; set; }
+    public long ReadSpeedBytesPerSecond { get; set; }
     public long SpeedBytesPerSecond { get; set; }
+    public long WriteSpeedBytesPerSecond { get; set; }
     public BackupMethod Method { get; set; } = BackupMethod.Full;
     public BackupCompression Compression { get; set; } = BackupCompression.None;
     public BackupConsistencyMode ConsistencyMode { get; set; }

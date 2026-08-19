@@ -3,7 +3,8 @@
 @{
     ViewData["Title"] = $"{Model.TaskName} · Ausführung #{Model.Job.Id}";
     ViewData["UserName"] = Model.CurrentUser?.UserName;
-    var progress = Model.Job.TotalBytes == 0 ? 0 : (int)Math.Clamp(Model.Job.BytesTransferred * 100 / Model.Job.TotalBytes, 0, 100);
+    var completedBytes = Model.Job.BytesWritten > 0 ? Math.Min(Model.Job.BytesTransferred, Model.Job.BytesWritten) : Model.Job.BytesTransferred;
+    var progress = Model.Job.TotalBytes == 0 ? 0 : (int)Math.Clamp(completedBytes * 100 / Model.Job.TotalBytes, 0, 100);
     var selectedSourcePaths = MatBu.Services.SourceSelection.Parse(Model.Job.SourceSelectionJson);
 }
 
@@ -63,8 +64,10 @@
 
 <div class="stats job-stats">
     <div class="stat"><span class="stat-label">Status</span><div class="stat-value compact-value">@Model.Job.State</div></div>
-    <div class="stat"><span class="stat-label">Fortschritt</span><div class="stat-value compact-value">@progress%</div><span class="stat-note">@Model.Job.BytesTransferred / @Model.Job.TotalBytes Bytes</span></div>
-    <div class="stat"><span class="stat-label">Geschwindigkeit</span><div class="stat-value compact-value">@FormatSpeed(Model.Job.SpeedBytesPerSecond)</div></div>
+    <div class="stat"><span class="stat-label">Gesamtfortschritt</span><div class="stat-value compact-value">@progress%</div><span class="stat-note">langsamste Pipeline-Stufe</span></div>
+    <div class="stat"><span class="stat-label">Gelesen</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.BytesRead)</div><span class="stat-note">@FormatSpeed(Model.Job.ReadSpeedBytesPerSecond)</span></div>
+    <div class="stat"><span class="stat-label">Übertragen</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.BytesTransferred)</div><span class="stat-note">@FormatSpeed(Model.Job.SpeedBytesPerSecond)</span></div>
+    <div class="stat"><span class="stat-label">Geschrieben</span><div class="stat-value compact-value">@Model.FormatBytes(Model.Job.BytesWritten)</div><span class="stat-note">@FormatSpeed(Model.Job.WriteSpeedBytesPerSecond)</span></div>
     <div class="stat"><span class="stat-label">Aktualisiert</span><div class="stat-value compact-value">@Model.Job.UpdateDate.ToLocalTime().ToString("dd.MM. HH:mm:ss")</div></div>
 </div>
 

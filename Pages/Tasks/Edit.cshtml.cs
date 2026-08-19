@@ -23,9 +23,10 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
     [BindProperty] public int ScheduleInterval { get; set; } = 2;
     [BindProperty] public string ScheduleIntervalUnit { get; set; } = "Hours";
     [BindProperty] public string ScheduleTime { get; set; } = "02:00";
-    [BindProperty] public string ScheduleWeekday { get; set; } = nameof(DayOfWeek.Sunday);
+    [BindProperty] public List<string> ScheduleWeekdays { get; set; } = [nameof(DayOfWeek.Sunday)];
 
     public IReadOnlyList<BackupObject> Objects { get; private set; } = [];
+    public IReadOnlyList<MatBuInstance> Instances { get; private set; } = [];
     public IReadOnlyList<JobLabel> JobLabels { get; private set; } = [];
     public IReadOnlyList<int> AllowedChunkSizesMiB => ValidChunkSizesMiB;
     public bool CanManageConsistency => CurrentUser?.Role == UserRole.Admin;
@@ -38,6 +39,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
 
         var data = Store.Read();
         Objects = data.Objects;
+        Instances = data.Instances.OrderBy(instance => instance.Role).ThenBy(instance => instance.Name, StringComparer.OrdinalIgnoreCase).ToList();
         JobLabels = data.JobLabels.OrderBy(label => label.Name, StringComparer.OrdinalIgnoreCase).ToList();
         if (Id is not null)
         {
@@ -67,6 +69,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
 
         var data = Store.Read();
         Objects = data.Objects;
+        Instances = data.Instances.OrderBy(instance => instance.Role).ThenBy(instance => instance.Name, StringComparer.OrdinalIgnoreCase).ToList();
         JobLabels = data.JobLabels.OrderBy(label => label.Name, StringComparer.OrdinalIgnoreCase).ToList();
         SelectedLabelIds = SelectedLabelIds.Distinct().ToList();
         // These optional domain fields are normalized and validated below.
@@ -76,7 +79,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
         ModelState.Remove("Input.PostBackupCommand");
         if (SelectedLabelIds.Any(labelId => !data.JobLabels.Any(label => label.Id == labelId)))
             ModelState.AddModelError(nameof(SelectedLabelIds), "Mindestens ein ausgewählter Tag existiert nicht.");
-        if (!BackupSchedule.TryBuild(ScheduleKind, ScheduleInterval, ScheduleIntervalUnit, ScheduleTime, ScheduleWeekday, out var schedule, out var scheduleError))
+        if (!BackupSchedule.TryBuild(ScheduleKind, ScheduleInterval, ScheduleIntervalUnit, ScheduleTime, ScheduleWeekdays, out var schedule, out var scheduleError))
             ModelState.AddModelError(nameof(ScheduleKind), scheduleError ?? "Der Zeitplan ist ungültig.");
         Input.Schedule = schedule;
         Input.SourceSelectionJson = SourceSelection.Serialize(SelectedSourcePaths);
@@ -174,7 +177,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
     {
         if (!BackupSchedule.TryParse(schedule, out var definition)) return;
         ScheduleTime = definition.Time.ToString("HH:mm");
-        ScheduleWeekday = definition.DayOfWeek.ToString();
+        ScheduleWeekdays = definition.EffectiveDays.Select(day => day.ToString()).ToList();
         ScheduleInterval = definition.IntervalValue > 0 ? definition.IntervalValue : 2;
         ScheduleIntervalUnit = definition.Kind == BackupScheduleKind.IntervalMinutes ? "Minutes" : "Hours";
         ScheduleKind = definition.Kind switch
