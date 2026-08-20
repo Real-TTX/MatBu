@@ -85,7 +85,7 @@ Der Docker-Socket gewährt dem Container praktisch administrative Kontrolle übe
 - Echtzeit-Job-Fortschritt: Gesamtbalken mit %, Ø-Speed und ETA sowie drei Pipeline-Stufen (Lesen/Übertragen/Schreiben) mit momentaner Geschwindigkeit – in Liste, Dashboard und Detailseite (1-2s-Polling)
 - Transfer-Backpressure und Sparse-Cache begrenzen den Cache-Bedarf der Secondary auf den un-übertragenen Rückstand
 - Free-Space-Guard auf den Primary-Empfangspfaden bricht kontrolliert ab, bevor der Cache-Datenträger vollläuft
-- Direkt-ins-Ziel-Streaming für LocalFolder-Ziele: kein zweites vollständiges Cache-Duplikat auf der Primary (Footprint ~1× statt ~2×), Integrität via Zurücklesen + SHA-256
+- Direkt-ins-Ziel-Streaming für LocalFolder- und SMB-Ziele: kein vollständiges Cache-Duplikat auf der Primary (SMB offset-adressiert via SMBLibrary), Integrität via Zurücklesen + SHA-256
 - Grazile Job-Abbrüche: laufende Ausführungen können abgebrochen werden (Zustand „Abgebrochen", kein Retry, Cleanup, Secondary-Abbruchsignal)
 - parallele Quellgrößen-Ermittlung, damit %/ETA verfügbar sind, ohne den Transferstart zu blockieren
 
@@ -150,9 +150,11 @@ Beim Gateway-Streaming baut die Secondary das Quellarchiv in einen lokalen Trans
 
 Auf den Primary-Empfangspfaden verhindert ein Free-Space-Guard, dass der Cache-Datenträger vollständig vollläuft: Unterschreitet der freie Platz die Sicherheitsreserve, wird der Transfer kontrolliert und wiederaufnehmbar abgebrochen statt mit einem harten „kein Speicherplatz"-Fehler.
 
-Bei einem **LocalFolder-Ziel auf der Primary** schreibt der Empfang die eintreffenden Chunks jetzt **direkt in die Zieldatei**, ohne eine zweite vollständige Kopie im Transfer-Cache zu halten. Der Primary-Footprint entspricht damit 1× der Archivgröße (nur die Zieldatei) statt vormals ~2×; die Integrität wird durch erneutes Lesen und SHA-256-Prüfung der fertigen Zieldatei vor dem atomaren Umbenennen sichergestellt. Große VM-Archive laufen so auch dann durch, wenn der Transfer-Cache-Datenträger kleiner als das Archiv ist.
+Bei einem **LocalFolder-Ziel auf der Primary** schreibt der Empfang die eintreffenden Chunks **direkt in die Zieldatei**, ohne eine zweite vollständige Kopie im Transfer-Cache zu halten. Der Primary-Footprint entspricht damit 1× der Archivgröße (nur die Zieldatei) statt vormals ~2×; die Integrität wird durch erneutes Lesen und SHA-256-Prüfung der fertigen Zieldatei vor dem atomaren Umbenennen sichergestellt.
 
-> **SMB-Ziele:** Für SMB-Ziele wird weiterhin über den Transfer-Cache übertragen (smbclient benötigt die vollständige lokale Datei). Wer den doppelten Footprint bei großen SMB-Zielen vermeiden möchte, bindet die Freigabe als CIFS-Mount ein und konfiguriert sie als `LocalFolder`-Ziel — damit greift automatisch der Direkt-ins-Ziel-Pfad.
+Bei einem **SMB-Ziel auf der Primary** wird das Archiv jetzt ebenfalls **direkt auf die Freigabe gestreamt** — offset-adressiert über eine reine .NET-SMB-Implementierung (SMBLibrary), ohne lokale Zwischenkopie. Der Wiederaufnahme-Offset ist die Remote-Dateigröße; vor dem atomaren Umbenennen wird die fertige Remote-Datei zur SHA-256-Prüfung noch einmal gelesen. Damit braucht auch ein SMB-Backup keinen lokalen Cache-Platz mehr. Über `MATBU_SMB_STREAMING=0` lässt sich für SMB der bisherige (smbclient-basierte, lokal zwischenlagernde) Pfad erzwingen.
+
+Große VM-Archive laufen so auf LocalFolder- **und** SMB-Zielen auch dann durch, wenn der Transfer-Cache-Datenträger kleiner als das Archiv ist.
 
 Relevante Umgebungsvariablen:
 
@@ -161,6 +163,7 @@ Relevante Umgebungsvariablen:
 | `MATBU_TRANSFER_BACKLOG_HIGH_MIB` | 512 | Rückstand, ab dem der Archiv-Build pausiert wird |
 | `MATBU_TRANSFER_BACKLOG_LOW_MIB` | 128 | Rückstand, bis zu dem gedrained wird, bevor der Build fortsetzt |
 | `MATBU_TRANSFER_SPARSE_CACHE` | an | `0` deaktiviert das Hole-Punching des Transfer-Caches |
+| `MATBU_SMB_STREAMING` | an | `0` erzwingt für SMB-Ziele den alten, lokal zwischenlagernden smbclient-Pfad statt des Direkt-Streams |
 | `MATBU_MIN_FREE_SPACE_GIB` | 1/20 der Platte (512 MiB–5 GiB) | Sicherheitsreserve für Free-Space-Guard und Archiv-Build |
 | `MATBU_TRANSFER_CACHE_RETENTION_HOURS` | 168 (7 Tage) | Aufbewahrung verwaister Transfer-Cache-Dateien |
 | `MATBU_SECONDARY_COMMAND_IDLE_TIMEOUT_SECONDS` | 120 | Idle-Timeout eines Secondary-Kommandos ohne Fortschritt |

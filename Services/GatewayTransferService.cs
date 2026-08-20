@@ -302,12 +302,22 @@ public sealed class GatewayTransferService(
         // LocalFolder streaming-primary keeps no cache file; the resume offset comes from the live receive
         // state, or from the finalized target. A restart (no in-memory hash chain) must restart from 0.
         var job = store.Read().TransferJobs.FirstOrDefault(j => j.TransferId.Equals(transferId, StringComparison.OrdinalIgnoreCase));
-        if (job is not null && ResolveLocalFolderStreamingPrimary(job.Id) is { } localTarget)
+        if (job is not null && ResolveStreamingPrimaryTarget(job.Id) is { } directTarget)
         {
-            var destinationPartial = localTarget.Destination + ".partial";
-            if (File.Exists(destinationPartial)) return new FileInfo(destinationPartial).Length;
-            if (File.Exists(localTarget.Destination)) return new FileInfo(localTarget.Destination).Length;
-            return 0;
+            if (directTarget.Object.Kind == ObjectKind.LocalFolder)
+            {
+                var destinationPartial = directTarget.Destination + ".partial";
+                if (File.Exists(destinationPartial)) return new FileInfo(destinationPartial).Length;
+                if (File.Exists(directTarget.Destination)) return new FileInfo(directTarget.Destination).Length;
+                return 0;
+            }
+            if (directTarget.Object.Kind == ObjectKind.Smb && SmbClientService.IsStreamingEnabled)
+            {
+                // Durable remote size is the resume cursor for the SMB direct route.
+                var partialSize = await smbClient.GetRemoteFileSizeAsync(directTarget.Object.Location, directTarget.FileName + ".partial", directTarget.Credential, cancellationToken);
+                if (partialSize > 0) return partialSize;
+                return await smbClient.GetRemoteFileSizeAsync(directTarget.Object.Location, directTarget.FileName, directTarget.Credential, cancellationToken);
+            }
         }
         var partial = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar.partial");
         var final = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar");
@@ -349,10 +359,14 @@ public sealed class GatewayTransferService(
         {
             // Resolve the streaming-primary target once per chunk (one store read) and reuse it below.
             var target = jobId > 0 ? ResolveStreamingPrimaryTarget(jobId) : null;
-            // Direct-to-target streaming for a LocalFolder primary target: write chunks straight to the
-            // target file, keeping NO full copy in the transfer cache (footprint 1x on the target disk).
+            // Direct-to-target streaming: write chunks straight to the primary target, keeping NO full copy
+            // in the transfer cache. LocalFolder writes the file directly; SMB writes offset-addressed via
+            // SMBLibrary (footprint ~0 locally). SMB can be forced back to the cache path with
+            // MATBU_SMB_STREAMING=0.
             if (target?.Object.Kind == ObjectKind.LocalFolder)
                 return await ReceiveSourceChunkToLocalTargetAsync(transferId, offset, final, jobId, totalBytes, expectedSha256, target, body, cancellationToken);
+            if (target?.Object.Kind == ObjectKind.Smb && SmbClientService.IsStreamingEnabled)
+                return await ReceiveSourceChunkToSmbTargetAsync(transferId, offset, final, jobId, totalBytes, expectedSha256, target, body, cancellationToken);
 
             var partial = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar.partial");
             Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
@@ -523,6 +537,79 @@ public sealed class GatewayTransferService(
         return new GatewayUploadResult(true, current, true, "Ziel-Transfer abgeschlossen.");
     }
 
+    // SMB counterpart of ReceiveSourceChunkToLocalTargetAsync: writes chunks straight to the SMB target via
+    // SMBLibrary (no local cache), with the durable REMOTE size as the offset and a remote whole-file SHA
+    // re-read on the final chunk. Same state-free integrity semantics as the LocalFolder direct route.
+    private async Task<GatewayUploadResult> ReceiveSourceChunkToSmbTargetAsync(
+        string transferId, long offset, bool final, long jobId, long totalBytes, string expectedSha256,
+        StreamingPrimaryTarget target, Stream body, CancellationToken cancellationToken)
+    {
+        var location = target.Object.Location;
+        var credential = target.Credential;
+        var name = target.FileName;
+
+        var partialSize = await smbClient.GetRemoteFileSizeAsync(location, name + ".partial", credential, cancellationToken);
+
+        // Already finalized (duplicate final after completion): no partial, but the finalized destination exists.
+        if (partialSize == 0)
+        {
+            var destinationSize = await smbClient.GetRemoteFileSizeAsync(location, name, credential, cancellationToken);
+            if (destinationSize > 0)
+            {
+                if (destinationSize != offset)
+                    return new GatewayUploadResult(false, destinationSize, false, "Der abgeschlossene Ziel-Checkpoint hat einen anderen Offset.");
+                if (!final)
+                    return new GatewayUploadResult(true, destinationSize, false, "Ziel ist bereits vollstaendig geschrieben.");
+                if (destinationSize != totalBytes || !ArchiveIntegrity.IsSha256(expectedSha256))
+                {
+                    await smbClient.DeleteRemoteFileAsync(location, name, credential, cancellationToken);
+                    return new GatewayUploadResult(false, 0, false, "Abgeschlossenes Ziel passt nicht; der Transfer wird neu aufgebaut.");
+                }
+                try { await smbClient.VerifyRemoteSha256Async(location, name, expectedSha256, credential, cancellationToken); }
+                catch (InvalidDataException)
+                {
+                    await smbClient.DeleteRemoteFileAsync(location, name, credential, cancellationToken);
+                    return new GatewayUploadResult(false, 0, false, "Abgeschlossenes Ziel hat eine falsche Pruefsumme; der Transfer wird neu aufgebaut.");
+                }
+                UpdatePipelineJob(jobId, transferId, destinationSize, destinationSize, totalBytes, target.Destination);
+                MarkStreamingTargetFinal(jobId, expectedSha256, target.Destination);
+                return new GatewayUploadResult(true, destinationSize, true, "Ziel war bereits abgeschlossen und wurde bestaetigt.");
+            }
+        }
+
+        if (partialSize != offset)
+            return new GatewayUploadResult(false, partialSize, false, "Der Ziel-Checkpoint stimmt nicht mit der Primary ueberein.");
+
+        if (!final)
+        {
+            // Read the HTTP body ASYNCHRONOUSLY here (Kestrel forbids synchronous stream reads); SMBLibrary's
+            // blocking WriteFile then runs off-thread over the buffered bytes. The chunk is bounded (<= the
+            // sender's ChunkSize), so buffering it in memory is safe and keeps no data on local disk.
+            using var buffer = new MemoryStream();
+            await body.CopyToAsync(buffer, 1024 * 1024, cancellationToken);
+            var newSize = await smbClient.WriteRemoteChunkAsync(location, name, offset, buffer.GetBuffer(), (int)buffer.Length, credential, cancellationToken);
+            UpdatePipelineJob(jobId, transferId, newSize, newSize, totalBytes, target.Destination + ".partial");
+            return new GatewayUploadResult(true, newSize, false, "Ziel-Chunk gespeichert.");
+        }
+
+        // Final chunk (empty body): validate remote size, re-read + SHA-verify the remote file, then rename.
+        if (partialSize != totalBytes || !ArchiveIntegrity.IsSha256(expectedSha256))
+        {
+            await smbClient.DeleteRemoteFileAsync(location, name + ".partial", credential, cancellationToken);
+            return new GatewayUploadResult(false, 0, false, "Finale Ziel-Metadaten sind ungueltig.");
+        }
+        try { await smbClient.VerifyRemoteSha256Async(location, name + ".partial", expectedSha256, credential, cancellationToken); }
+        catch (InvalidDataException ex)
+        {
+            await smbClient.DeleteRemoteFileAsync(location, name + ".partial", credential, cancellationToken);
+            return new GatewayUploadResult(false, 0, false, ex.Message);
+        }
+        await smbClient.FinalizeStreamingRenameAsync(location, name, credential, cancellationToken);
+        UpdatePipelineJob(jobId, transferId, partialSize, partialSize, totalBytes, target.Destination);
+        MarkStreamingTargetFinal(jobId, expectedSha256, target.Destination);
+        return new GatewayUploadResult(true, partialSize, true, "Ziel-Transfer abgeschlossen.");
+    }
+
     private void MarkStreamingTargetFinal(long jobId, string expectedSha256, string destination)
     {
         if (jobId <= 0) return;
@@ -643,14 +730,6 @@ public sealed class GatewayTransferService(
         return new StreamingPrimaryTarget(target, store.GetSmbCredential(target.Id), fileName, destination);
     }
 
-    // The direct-to-target streaming receive (no cache copy) only applies to LocalFolder targets; SMB and
-    // everything else keep the existing cache-staged path.
-    private StreamingPrimaryTarget? ResolveLocalFolderStreamingPrimary(long jobId)
-    {
-        var target = ResolveStreamingPrimaryTarget(jobId);
-        return target?.Object.Kind == ObjectKind.LocalFolder ? target : null;
-    }
-
     private async Task<long> SyncStreamingTargetAsync(
         StreamingPrimaryTarget target,
         string sourcePath,
@@ -688,7 +767,18 @@ public sealed class GatewayTransferService(
                 if (File.Exists(target.Destination)) File.Delete(target.Destination);
                 return;
             }
-            await smbClient.DeleteUploadPartialAsync(target.Object.Location, target.FileName, target.Credential, cancellationToken);
+            if (SmbClientService.IsStreamingEnabled)
+            {
+                // Direct route uses SMBLibrary end to end (no smbclient CLI): drop both the .partial and a
+                // finalized destination from a prior failed attempt so a rebuilt source cannot be
+                // re-acknowledged under a new SHA (same clean-slate rule as LocalFolder).
+                await smbClient.DeleteRemoteFileAsync(target.Object.Location, target.FileName + ".partial", target.Credential, cancellationToken);
+                await smbClient.DeleteRemoteFileAsync(target.Object.Location, target.FileName, target.Credential, cancellationToken);
+            }
+            else
+            {
+                await smbClient.DeleteUploadPartialAsync(target.Object.Location, target.FileName, target.Credential, cancellationToken);
+            }
         }
         catch (Exception ex)
         {

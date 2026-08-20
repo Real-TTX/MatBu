@@ -1,6 +1,12 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using MatBu.Models;
+using SMBLibrary;
+using SMBLibrary.Client;
+using SmbFileAttributes = SMBLibrary.FileAttributes;
 
 namespace MatBu.Services;
 
@@ -575,4 +581,192 @@ public sealed class SmbClientService(ILogger<SmbClientService> logger)
     }
 
     private sealed record SmbCommandResult(bool Success, int ExitCode, string Details);
+
+    // ---- SMBLibrary streaming write (bounded: no full local cache copy) ----
+    // Used by the direct-to-target primary receive so a large archive is written straight to the SMB target,
+    // offset-addressed, instead of being staged whole locally for smbclient `reput`. Each call opens its own
+    // short-lived SMB2 session (leak-proof, thread-safe); the resume offset is the durable remote size.
+
+    /// <summary>Whether the SMBLibrary direct-to-target streaming write is enabled (env MATBU_SMB_STREAMING).</summary>
+    public static bool IsStreamingEnabled { get; } = Environment.GetEnvironmentVariable("MATBU_SMB_STREAMING") != "0";
+
+    public Task<long> GetRemoteFileSizeAsync(string location, string remoteName, (string Username, string Password)? credential, CancellationToken cancellationToken) =>
+        Task.Run(() => ExecuteSmb(location, credential, (store, loc) =>
+        {
+            var path = RemotePath(loc, remoteName);
+            var status = store.CreateFile(out var handle, out _, path, AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE, SmbFileAttributes.Normal, ShareAccess.Read | ShareAccess.Write, CreateDisposition.FILE_OPEN, CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_NONALERT, null);
+            if (IsNotFoundStatus(status)) return 0L;
+            if (status != NTStatus.STATUS_SUCCESS) throw new IOException($"SMB-Datei '{remoteName}' konnte nicht geoeffnet werden: {status}.");
+            try { return ReadEndOfFile(store, handle); }
+            finally { store.CloseFile(handle); }
+        }), cancellationToken);
+
+    // data is the already-buffered chunk (the caller reads the HTTP body ASYNC before calling — Kestrel
+    // forbids synchronous stream reads). Written in <= MaxWriteSize slices at an advancing remote offset.
+    public Task<long> WriteRemoteChunkAsync(string location, string remoteName, long offset, byte[] data, int length, (string Username, string Password)? credential, CancellationToken cancellationToken) =>
+        Task.Run(() => ExecuteSmb(location, credential, (store, loc) =>
+        {
+            EnsureRemoteDirectories(store, loc.Directory);
+            var path = RemotePath(loc, remoteName + ".partial");
+            var status = store.CreateFile(out var handle, out _, path, AccessMask.GENERIC_READ | AccessMask.GENERIC_WRITE | AccessMask.SYNCHRONIZE, SmbFileAttributes.Normal, ShareAccess.Read, CreateDisposition.FILE_OPEN_IF, CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_NONALERT, null);
+            if (status != NTStatus.STATUS_SUCCESS) throw new IOException($"SMB-Zieldatei konnte nicht geoeffnet werden: {status}.");
+            try
+            {
+                var current = ReadEndOfFile(store, handle);
+                if (current != offset) throw new IOException($"SMB-Checkpoint stimmt nicht (erwartet {offset}, remote {current}).");
+                // Keep each WriteFile well under the negotiated MaxWriteSize so the SMB2 credit charge stays
+                // below SMB2Client.DesiredCredits (16 @ 64 KiB/credit); a 1 MiB write == 16 credits leaves no
+                // margin and can throw a non-recoverable "Not enough credits".
+                var maxWrite = (int)Math.Min(store.MaxWriteSize == 0 ? 65536u : store.MaxWriteSize, 256u * 1024u);
+                var position = current;
+                var sent = 0;
+                while (sent < length)
+                {
+                    var count = Math.Min(maxWrite, length - sent);
+                    var slice = sent == 0 && count == data.Length ? data : data[sent..(sent + count)];
+                    var writeStatus = store.WriteFile(out var wrote, handle, position, slice);
+                    if (writeStatus == NTStatus.STATUS_DISK_FULL) throw new IOException("SMB-Ziel ist voll (STATUS_DISK_FULL).");
+                    if (writeStatus != NTStatus.STATUS_SUCCESS) throw new IOException($"SMB-Schreiben fehlgeschlagen: {writeStatus}.");
+                    if (wrote <= 0) throw new IOException("SMB-Schreiben ohne Fortschritt.");
+                    sent += wrote;
+                    position += wrote;
+                }
+                store.FlushFileBuffers(handle);
+                return ReadEndOfFile(store, handle);
+            }
+            finally { store.CloseFile(handle); }
+        }), cancellationToken);
+
+    public Task VerifyRemoteSha256Async(string location, string remoteName, string expectedSha256, (string Username, string Password)? credential, CancellationToken cancellationToken) =>
+        Task.Run(() => ExecuteSmb(location, credential, (store, loc) =>
+        {
+            var path = RemotePath(loc, remoteName);
+            var status = store.CreateFile(out var handle, out _, path, AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE, SmbFileAttributes.Normal, ShareAccess.Read, CreateDisposition.FILE_OPEN, CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_NONALERT, null);
+            if (status != NTStatus.STATUS_SUCCESS) throw new IOException($"SMB-Datei zum Pruefen konnte nicht geoeffnet werden: {status}.");
+            try
+            {
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var maxRead = (int)Math.Min(store.MaxReadSize == 0 ? 65536u : store.MaxReadSize, 256u * 1024u);
+                long readOffset = 0;
+                while (true)
+                {
+                    var readStatus = store.ReadFile(out var data, handle, readOffset, maxRead);
+                    if (readStatus == NTStatus.STATUS_END_OF_FILE) break;
+                    if (readStatus != NTStatus.STATUS_SUCCESS) throw new IOException($"SMB-Lesen zum Pruefen fehlgeschlagen: {readStatus}.");
+                    if (data is null || data.Length == 0) break;
+                    hash.AppendData(data);
+                    readOffset += data.Length;
+                }
+                var actual = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+                if (!string.Equals(actual, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"SMB-Pruefsumme stimmt nicht ueberein (erwartet {expectedSha256}, erhalten {actual}).");
+                return true;
+            }
+            finally { store.CloseFile(handle); }
+        }), cancellationToken);
+
+    public Task FinalizeStreamingRenameAsync(string location, string remoteName, (string Username, string Password)? credential, CancellationToken cancellationToken) =>
+        Task.Run(() => ExecuteSmb(location, credential, (store, loc) =>
+        {
+            var partialPath = RemotePath(loc, remoteName + ".partial");
+            var finalPath = RemotePath(loc, remoteName);
+            var status = store.CreateFile(out var handle, out _, partialPath, AccessMask.DELETE | AccessMask.SYNCHRONIZE, SmbFileAttributes.Normal, ShareAccess.None, CreateDisposition.FILE_OPEN, CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_NONALERT, null);
+            if (status != NTStatus.STATUS_SUCCESS) throw new IOException($"SMB-Abschluss: Quelldatei nicht geoeffnet: {status}.");
+            try
+            {
+                var rename = store.SetFileInformation(handle, new FileRenameInformationType2 { ReplaceIfExists = true, RootDirectory = 0, FileName = finalPath });
+                if (rename == NTStatus.STATUS_SUCCESS) return true;
+                if (rename is NTStatus.STATUS_OBJECT_NAME_COLLISION or NTStatus.STATUS_ACCESS_DENIED)
+                {
+                    DeleteInStore(store, finalPath);
+                    var retry = store.SetFileInformation(handle, new FileRenameInformationType2 { ReplaceIfExists = true, RootDirectory = 0, FileName = finalPath });
+                    if (retry == NTStatus.STATUS_SUCCESS) return true;
+                    throw new IOException($"SMB-Abschluss (Umbenennen) fehlgeschlagen: {retry}.");
+                }
+                throw new IOException($"SMB-Abschluss (Umbenennen) fehlgeschlagen: {rename}.");
+            }
+            finally { store.CloseFile(handle); }
+        }), cancellationToken);
+
+    public Task DeleteRemoteFileAsync(string location, string remoteName, (string Username, string Password)? credential, CancellationToken cancellationToken) =>
+        Task.Run(() => ExecuteSmb(location, credential, (store, loc) =>
+        {
+            DeleteInStore(store, RemotePath(loc, remoteName));
+            return true;
+        }), cancellationToken);
+
+    private static bool IsNotFoundStatus(NTStatus status) =>
+        status is NTStatus.STATUS_OBJECT_NAME_NOT_FOUND or NTStatus.STATUS_NO_SUCH_FILE or NTStatus.STATUS_OBJECT_PATH_NOT_FOUND;
+
+    private static long ReadEndOfFile(ISMBFileStore store, object handle)
+    {
+        var status = store.GetFileInformation(out var info, handle, FileInformationClass.FileStandardInformation);
+        if (status != NTStatus.STATUS_SUCCESS || info is not FileStandardInformation standard)
+            throw new IOException($"SMB-Dateigroesse konnte nicht gelesen werden: {status}.");
+        return standard.EndOfFile;
+    }
+
+    private static void DeleteInStore(ISMBFileStore store, string path)
+    {
+        var status = store.CreateFile(out var handle, out _, path, AccessMask.DELETE | AccessMask.SYNCHRONIZE, SmbFileAttributes.Normal, ShareAccess.None, CreateDisposition.FILE_OPEN, CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_DELETE_ON_CLOSE | CreateOptions.FILE_SYNCHRONOUS_IO_NONALERT, null);
+        if (IsNotFoundStatus(status)) return;
+        if (status != NTStatus.STATUS_SUCCESS) throw new IOException($"SMB-Loeschen fehlgeschlagen: {status}.");
+        store.CloseFile(handle); // FILE_DELETE_ON_CLOSE performs the delete
+    }
+
+    private static void EnsureRemoteDirectories(ISMBFileStore store, string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return;
+        var segments = directory.Replace('/', '\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        var current = "";
+        foreach (var segment in segments)
+        {
+            current = current.Length == 0 ? segment : current + "\\" + segment;
+            var status = store.CreateFile(out var handle, out _, current, AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE, SmbFileAttributes.Directory, ShareAccess.Read | ShareAccess.Write, CreateDisposition.FILE_OPEN_IF, CreateOptions.FILE_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_NONALERT, null);
+            if (status == NTStatus.STATUS_SUCCESS) { store.CloseFile(handle); continue; }
+            if (status is NTStatus.STATUS_OBJECT_NAME_COLLISION) continue;
+            throw new IOException($"SMB-Ordner '{current}' konnte nicht angelegt werden: {status}.");
+        }
+    }
+
+    private static string RemotePath(SmbLocation loc, string name) =>
+        string.IsNullOrWhiteSpace(loc.Directory) ? name : loc.Directory!.Replace('/', '\\').Trim('\\') + "\\" + name;
+
+    private T ExecuteSmb<T>(string location, (string Username, string Password)? credential, Func<ISMBFileStore, SmbLocation, T> action)
+    {
+        var loc = SmbPath.Parse(location);
+        var addresses = Dns.GetHostAddresses(loc.Server);
+        var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
+            ?? addresses.FirstOrDefault()
+            ?? throw new IOException($"SMB-Host '{loc.Server}' konnte nicht aufgeloest werden.");
+        var client = new SMB2Client();
+        try
+        {
+            if (!client.Connect(ip, SMBTransportType.DirectTCPTransport))
+                throw new IOException($"SMB-Server '{loc.Server}' ist nicht erreichbar (Port 445?).");
+            var (user, domain) = credential is null ? ("", (string?)null) : SplitUsername(credential.Value.Username);
+            var login = credential is null
+                ? client.Login(string.Empty, string.Empty, string.Empty)
+                : client.Login(domain ?? string.Empty, user, credential.Value.Password);
+            if (login != NTStatus.STATUS_SUCCESS)
+                throw new IOException($"SMB-Anmeldung fehlgeschlagen: {login}.");
+            var store = client.TreeConnect(loc.ShareName, out var treeStatus);
+            if (store is null || treeStatus != NTStatus.STATUS_SUCCESS)
+                throw new IOException($"SMB-Freigabe '{loc.ShareName}' konnte nicht verbunden werden: {treeStatus}.");
+            try { return action(store, loc); }
+            // SMBLibrary can surface protocol issues (e.g. credit exhaustion on a non-multi-credit link) as
+            // raw Exceptions; normalize them to IOException so callers fail the transfer gracefully (retry)
+            // instead of bubbling an unhandled 500. Keep InvalidDataException (SHA mismatch) distinct.
+            catch (Exception ex) when (ex is not IOException and not InvalidDataException and not OperationCanceledException)
+            {
+                throw new IOException($"SMB-Operation fehlgeschlagen: {ex.Message}", ex);
+            }
+            finally { try { store.Disconnect(); } catch { } }
+        }
+        finally
+        {
+            try { client.Logoff(); } catch { }
+            try { client.Disconnect(); } catch { }
+        }
+    }
 }
