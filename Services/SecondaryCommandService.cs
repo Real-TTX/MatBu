@@ -14,7 +14,9 @@ public sealed record SecondaryCommandProgress(
     long BytesWritten = 0,
     long ReadSpeedBytesPerSecond = 0,
     long WriteSpeedBytesPerSecond = 0,
-    string? Phase = null);
+    string? Phase = null,
+    long EstimatedSourceBytes = 0,
+    long EstimatedStoredBytes = 0);
 
 public sealed class SecondaryCommandService(PersistentStore store)
 {
@@ -162,6 +164,8 @@ public sealed class SecondaryCommandService(PersistentStore store)
                 if (progress.WriteSpeedBytesPerSecond > 0 || progress.BytesWritten > 0)
                     job.WriteSpeedBytesPerSecond = progress.WriteSpeedBytesPerSecond;
                 if (!string.IsNullOrEmpty(progress.Phase)) job.Phase = progress.Phase;
+                if (progress.EstimatedSourceBytes > 0) job.EstimatedSourceBytes = progress.EstimatedSourceBytes;
+                if (progress.EstimatedStoredBytes > 0) job.EstimatedStoredBytes = progress.EstimatedStoredBytes;
                 job.CheckpointPath = progress.Checkpoint ?? job.CheckpointPath;
                 job.UpdateDate = DateTimeOffset.UtcNow;
             }

@@ -45,9 +45,18 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
     {
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         var selection = SourceSelection.Normalize(includedPaths ?? []);
-        var estimatedSourceBytes = source.Kind == ObjectKind.LocalFolder
-            ? await EstimateLocalTarBytesAsync(source.Location, selection, cancellationToken)
-            : 0;
+        // Determine the total source size CONCURRENTLY instead of blocking the first produced byte on it:
+        // on a large/slow tree the recursive size scan can take longer than the secondary idle watchdog,
+        // which would stall the transfer before any data flows. The estimate snaps in once it resolves.
+        long estimatedSourceBytes = 0;
+        using var estimateCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task? estimateTask = source.Kind == ObjectKind.LocalFolder
+            ? Task.Run(async () =>
+            {
+                try { Interlocked.Exchange(ref estimatedSourceBytes, await EstimateLocalTarBytesAsync(source.Location, selection, estimateCts.Token)); }
+                catch { /* best effort: total stays 0 (indeterminate) until/if it resolves */ }
+            }, estimateCts.Token)
+            : null;
         var stopwatch = Stopwatch.StartNew();
         long lastBytes = 0;
         long lastTicks = 0;
@@ -61,10 +70,11 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
             if (!force && elapsedTicks - lastTicks < Stopwatch.Frequency / 2) return;
             var elapsedSeconds = Math.Max(0.001, (double)(elapsedTicks - lastTicks) / Stopwatch.Frequency);
             var speed = (long)Math.Max(0, (sourceCounter.BytesWritten - lastBytes) / elapsedSeconds);
-            var estimatedStored = sourceCounter.BytesWritten > 0 && estimatedSourceBytes > 0
-                ? (long)Math.Ceiling(estimatedSourceBytes * (double)storedCounter.BytesWritten / sourceCounter.BytesWritten)
+            var estimate = Interlocked.Read(ref estimatedSourceBytes);
+            var estimatedStored = sourceCounter.BytesWritten > 0 && estimate > 0
+                ? (long)Math.Ceiling(estimate * (double)storedCounter.BytesWritten / sourceCounter.BytesWritten)
                 : 0;
-            progress(new ArchiveProgress(sourceCounter.BytesWritten, storedCounter.BytesWritten, estimatedSourceBytes, estimatedStored, speed));
+            progress(new ArchiveProgress(sourceCounter.BytesWritten, storedCounter.BytesWritten, estimate, estimatedStored, speed));
             lastBytes = sourceCounter.BytesWritten;
             lastTicks = elapsedTicks;
         }
@@ -137,11 +147,16 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
             File.Move(temporaryBuilding, outputPath, overwrite: true);
             var storedBytes = new FileInfo(outputPath).Length;
             var sha256 = Convert.ToHexString(storedHash.GetHashAndReset()).ToLowerInvariant();
-            progress?.Invoke(new ArchiveProgress(sourceBytes, storedBytes, estimatedSourceBytes, storedBytes, 0));
+            // At completion the exact totals are known, so report them (resolves the UI to 100% even if
+            // the background estimate had not finished yet).
+            progress?.Invoke(new ArchiveProgress(sourceBytes, storedBytes, sourceBytes, storedBytes, 0));
             return new ArchiveCreationResult(sourceBytes, storedBytes, sha256);
         }
         finally
         {
+            // Stop the background size estimate so it cannot keep scanning the tree after an early exit.
+            estimateCts.Cancel();
+            if (estimateTask is not null) { try { await estimateTask; } catch { } }
             if (sourceCounter is not null) await sourceCounter.DisposeAsync();
             try { if (File.Exists(temporaryBuilding)) File.Delete(temporaryBuilding); } catch { }
         }

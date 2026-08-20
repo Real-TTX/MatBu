@@ -22,7 +22,18 @@ public sealed class SecondaryConnectionWorker(
     ILogger<SecondaryConnectionWorker> logger) : BackgroundService
 {
     private const int ChunkSize = 4 * 1024 * 1024;
+    // Keepalive so the primary's idle watchdog (default 120s) does not kill a long-but-live build/transfer.
+    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(ResolveInt("MATBU_SECONDARY_HEARTBEAT_SECONDS", 10, 2, 60));
+    // Upper bound on how long the build may make no observable forward progress before we let the watchdog
+    // trip anyway (guards against masking a genuinely frozen source read).
+    private static readonly TimeSpan MaxSilentBuildWindow = TimeSpan.FromSeconds(ResolveInt("MATBU_SECONDARY_BUILD_STALL_SECONDS", 1800, 120, 21600));
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
+
+    private static int ResolveInt(string variable, int fallback, int min, int max)
+    {
+        var configured = Environment.GetEnvironmentVariable(variable);
+        return int.TryParse(configured, out var value) ? Math.Clamp(value, min, max) : fallback;
+    }
     private readonly string _primaryEndpoint = (Environment.GetEnvironmentVariable("MATBU_PRIMARY_ENDPOINT") ?? "").TrimEnd('/');
     private readonly string? _token = Environment.GetEnvironmentVariable("MATBU_INSTANCE_TOKEN");
 
@@ -110,7 +121,8 @@ public sealed class SecondaryConnectionWorker(
                         payload.Source,
                         payload.Consistency,
                         cancellationToken,
-                        progress => latest = progress);
+                        progress => latest = progress,
+                        enableBackpressure: true);
                     await PushGrowingSourceAsync(client, command, preparation, payload.JobId, () => latest, cancellationToken);
                     var metrics = transfers.GetSourceMetrics(command.TransferId);
                     await CompleteAsync(client, command.Id, true, JsonSerializer.Serialize(metrics), "", cancellationToken);
@@ -317,13 +329,24 @@ public sealed class SecondaryConnectionWorker(
         CancellationToken cancellationToken)
     {
         ArchiveProgress latest = new(0, 0, 0, 0, 0);
+        // Reset any stale target checkpoint from a previous failed attempt: with the sparse cache the source
+        // archive is rebuilt from scratch on retry and may differ byte-for-byte, so resuming onto an old
+        // target partial would splice mismatched content. Always restart the target from offset 0.
+        await transfers.ResetStreamingTargetAsync(command.TransferId, payload.Target, cancellationToken);
         var preparation = transfers.PrepareSourceArchiveAsync(
             payload.Source,
             payload.Consistency,
             cancellationToken,
-            progress => latest = progress);
+            progress => latest = progress,
+            enableBackpressure: true);
         var started = Stopwatch.StartNew();
+        var syncSpeed = new SpeedWindow();
         long synced = 0;
+        long releasedUpTo = 0;
+        long lastObservedAvailable = -1;
+        long lastSourceBytes = -1;
+        var lastForwardAt = started.Elapsed;
+        var lastHeartbeat = started.Elapsed;
         GatewayStreamingWriteResult? write = null;
         while (true)
         {
@@ -334,30 +357,52 @@ public sealed class SecondaryConnectionWorker(
             var available = TryGetFileLength(availablePath);
             if (available > synced)
             {
+                // A single tail copy can be up to the backpressure high watermark; pump heartbeats during it
+                // so a slow target does not trip the idle watchdog mid-copy.
                 try
                 {
-                    write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, availablePath, final: false, cancellationToken);
+                    write = await RunWithHeartbeatAsync(
+                        client, command.Id, synced, latest.EstimatedStoredBytes, latest.SourceBytes, JobPhase.Writing,
+                        ct => transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, availablePath, final: false, ct),
+                        cancellationToken);
                 }
                 catch (FileNotFoundException) when (File.Exists(finalPath))
                 {
                     continue;
                 }
                 synced = available;
-                var speed = (long)(synced / Math.Max(0.001, started.Elapsed.TotalSeconds));
+                // Release the producer (backpressure) and reclaim the transferred cache region on disk.
+                transfers.ReportConsumed(command.TransferId, synced);
+                releasedUpTo = transfers.ReleaseConsumedSpace(availablePath, synced, releasedUpTo);
+                var speed = syncSpeed.Sample(synced);
                 var estimate = latest.EstimatedStoredBytes > 0 ? latest.EstimatedStoredBytes : synced;
-                await ProgressAsync(client, command.Id, synced, estimate, speed, cancellationToken, latest.SourceBytes, write.WrittenBytes, latest.SpeedBytesPerSecond, speed);
+                await ProgressAsync(client, command.Id, synced, estimate, speed, cancellationToken, latest.SourceBytes, write.WrittenBytes, latest.SpeedBytesPerSecond, speed, JobPhase.Writing, latest.EstimatedSourceBytes, latest.EstimatedStoredBytes);
                 continue;
             }
             if (!preparation.IsCompleted)
             {
+                // Liveness = the source is still being read/compressed (SourceBytes grows), the cache file
+                // grows, or we are deliberately throttled. File length alone misses long compressible spans.
+                if (available > lastObservedAvailable || latest.SourceBytes > lastSourceBytes || transfers.IsThrottled(command.TransferId)) lastForwardAt = started.Elapsed;
+                lastObservedAvailable = Math.Max(lastObservedAvailable, available);
+                lastSourceBytes = Math.Max(lastSourceBytes, latest.SourceBytes);
+                if (started.Elapsed - lastHeartbeat >= HeartbeatInterval && started.Elapsed - lastForwardAt < MaxSilentBuildWindow)
+                {
+                    var phase = transfers.IsThrottled(command.TransferId) ? JobPhase.ReadPausedSlowTransfer : JobPhase.Reading;
+                    await ProgressAsync(client, command.Id, synced, latest.EstimatedStoredBytes, 0, cancellationToken, latest.SourceBytes, write?.WrittenBytes ?? 0, latest.SpeedBytesPerSecond, 0, phase, latest.EstimatedSourceBytes, latest.EstimatedStoredBytes);
+                    lastHeartbeat = started.Elapsed;
+                }
                 await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
                 continue;
             }
 
             var archive = await preparation;
             var metrics = transfers.GetSourceMetrics(command.TransferId);
-            write = await transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, archive, final: true, cancellationToken);
-            await ProgressAsync(client, command.Id, metrics.StoredBytes, metrics.StoredBytes, 0, cancellationToken, metrics.SourceBytes, write.WrittenBytes, 0, 0);
+            write = await RunWithHeartbeatAsync(
+                client, command.Id, metrics.StoredBytes, metrics.StoredBytes, metrics.SourceBytes, JobPhase.Finalizing,
+                ct => transfers.SyncTargetCheckpointAsync(command.TransferId, payload.Target, archive, final: true, ct),
+                cancellationToken);
+            await ProgressAsync(client, command.Id, metrics.StoredBytes, metrics.StoredBytes, 0, cancellationToken, metrics.SourceBytes, write.WrittenBytes, 0, 0, JobPhase.Finalizing, metrics.SourceBytes, metrics.StoredBytes);
             return new SecondaryLocalStreamingResult(metrics, write.Destination);
         }
     }
@@ -374,6 +419,10 @@ public sealed class SecondaryConnectionWorker(
         var started = Stopwatch.StartNew();
         var uploadSpeed = new SpeedWindow();
         long releasedUpTo = 0;
+        long lastObservedAvailable = -1;
+        long lastSourceBytes = -1;
+        var lastForwardAt = started.Elapsed;
+        var lastHeartbeat = started.Elapsed;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -417,12 +466,24 @@ public sealed class SecondaryConnectionWorker(
                     0,
                     current.SpeedBytesPerSecond,
                     0,
-                    phase);
+                    phase,
+                    current.EstimatedSourceBytes,
+                    current.EstimatedStoredBytes);
                 continue;
             }
 
             if (!preparation.IsCompleted)
             {
+                var current = progress();
+                if (available > lastObservedAvailable || current.SourceBytes > lastSourceBytes || transfers.IsThrottled(command.TransferId)) lastForwardAt = started.Elapsed;
+                lastObservedAvailable = Math.Max(lastObservedAvailable, available);
+                lastSourceBytes = Math.Max(lastSourceBytes, current.SourceBytes);
+                if (started.Elapsed - lastHeartbeat >= HeartbeatInterval && started.Elapsed - lastForwardAt < MaxSilentBuildWindow)
+                {
+                    var phase = transfers.IsThrottled(command.TransferId) ? JobPhase.ReadPausedSlowTransfer : JobPhase.Reading;
+                    await ProgressAsync(client, command.Id, offset, current.EstimatedStoredBytes, 0, cancellationToken, current.SourceBytes, 0, current.SpeedBytesPerSecond, 0, phase, current.EstimatedSourceBytes, current.EstimatedStoredBytes);
+                    lastHeartbeat = started.Elapsed;
+                }
                 await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
                 continue;
             }
@@ -431,7 +492,10 @@ public sealed class SecondaryConnectionWorker(
             var total = new FileInfo(archivePath).Length;
             if (offset < total) continue;
             var metrics = transfers.GetSourceMetrics(command.TransferId);
-            var finalResult = await SendSourceChunkAsync(client, command, jobId, offset, total, metrics.Sha256, true, [], cancellationToken);
+            var finalResult = await RunWithHeartbeatAsync(
+                client, command.Id, offset, metrics.StoredBytes, metrics.SourceBytes, JobPhase.Integrity,
+                ct => SendSourceChunkAsync(client, command, jobId, offset, total, metrics.Sha256, true, [], ct),
+                cancellationToken);
             if (!finalResult.Success || !finalResult.Completed) throw new IOException(finalResult.Message);
             var finalProgress = progress();
             await ProgressAsync(
@@ -444,7 +508,10 @@ public sealed class SecondaryConnectionWorker(
                 finalProgress.SourceBytes > 0 ? finalProgress.SourceBytes : metrics.SourceBytes,
                 total,
                 0,
-                0);
+                0,
+                JobPhase.Finalizing,
+                metrics.SourceBytes,
+                metrics.StoredBytes);
             return;
         }
     }
@@ -733,13 +800,56 @@ public sealed class SecondaryConnectionWorker(
         long bytesWritten = 0,
         long readSpeed = 0,
         long writeSpeed = 0,
-        string? phase = null)
+        string? phase = null,
+        long estimatedSource = 0,
+        long estimatedStored = 0)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, _primaryEndpoint + $"/api/secondary/commands/{commandId}/progress");
         AddToken(request);
-        request.Content = JsonContent.Create(new SecondaryCommandProgress(bytes, total, speed, "Secondary-Verbindung", bytesRead, bytesWritten, readSpeed, writeSpeed, phase));
+        request.Content = JsonContent.Create(new SecondaryCommandProgress(bytes, total, speed, "Secondary-Verbindung", bytesRead, bytesWritten, readSpeed, writeSpeed, phase, estimatedSource, estimatedStored));
         using var response = await client.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Run a single long await (e.g. the final chunk PUT, during which the primary hashes the whole archive)
+    /// while a background loop keeps posting heartbeats, so the primary's idle watchdog does not kill the
+    /// command at the very end. The pump is inherently live because the wrapped operation is running.
+    /// </summary>
+    private async Task<T> RunWithHeartbeatAsync<T>(
+        HttpClient client,
+        long commandId,
+        long bytes,
+        long total,
+        long sourceBytes,
+        string phase,
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var pump = Task.Run(async () =>
+        {
+            try
+            {
+                while (!pumpCts.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(HeartbeatInterval, pumpCts.Token);
+                    if (pumpCts.Token.IsCancellationRequested) break;
+                    try { await ProgressAsync(client, commandId, bytes, total, 0, pumpCts.Token, sourceBytes, 0, 0, 0, phase, sourceBytes, total); }
+                    catch { /* heartbeat is best-effort */ }
+                }
+            }
+            catch (OperationCanceledException) { }
+        }, pumpCts.Token);
+        try
+        {
+            return await operation(cancellationToken);
+        }
+        finally
+        {
+            pumpCts.Cancel();
+            try { await pump; } catch { /* ignore */ }
+        }
     }
 
     private async Task CompleteAsync(HttpClient client, long commandId, bool success, string result, string error, CancellationToken cancellationToken)

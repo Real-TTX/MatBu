@@ -41,6 +41,29 @@ public sealed class ArchiveIncrementalShaTests : IDisposable
         Assert.Equal(fileHash, result.Sha256);
     }
 
+    [Fact]
+    public async Task CreateCompressed_ParallelEstimate_ResolvesToExactTotalAtCompletion()
+    {
+        var archive = new ArchiveService(
+            new FakeEnvironment(_root),
+            new SmbClientService(NullLogger<SmbClientService>.Instance),
+            new ProxmoxService(NullLogger<ProxmoxService>.Instance),
+            NullLogger<ArchiveService>.Instance);
+
+        var source = new BackupObject { Kind = ObjectKind.LocalFolder, Location = _source };
+        var progresses = new List<ArchiveProgress>();
+
+        await archive.CreateCompressedAsync(source, null, _output, BackupCompression.None, p => progresses.Add(p), CancellationToken.None);
+
+        Assert.NotEmpty(progresses);
+        var final = progresses[^1];
+        // At completion the total is exact and non-zero (so the UI resolves to 100%), even though the
+        // estimate runs in parallel and may start at 0.
+        Assert.True(final.EstimatedSourceBytes > 0);
+        Assert.Equal(final.SourceBytes, final.EstimatedSourceBytes);
+        Assert.Equal(final.StoredBytes, final.EstimatedStoredBytes);
+    }
+
     private static byte[] RandomBytes(int count)
     {
         var data = new byte[count];

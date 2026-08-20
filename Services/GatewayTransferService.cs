@@ -75,7 +75,8 @@ public sealed class GatewayTransferService(
         GatewaySourceRequest request,
         BackupConsistencySettings consistency,
         CancellationToken cancellationToken,
-        Action<ArchiveProgress>? progress)
+        Action<ArchiveProgress>? progress,
+        bool enableBackpressure = false)
     {
         EnsureTransferId(request.TransferId);
         var gate = _transferLocks.GetOrAdd(request.TransferId, _ => new SemaphoreSlim(1, 1));
@@ -100,6 +101,12 @@ public sealed class GatewayTransferService(
             {
                 if (consistency.Mode != BackupConsistencyMode.None)
                     lease = await dockerConsistency.BeginAsync(consistency, cancellationToken);
+                // Backpressure only makes sense when a consumer drains the growing cache concurrently (the
+                // streaming secondary paths). For await-then-stream callers there is no concurrent consumer,
+                // so throttling would deadlock — those pass enableBackpressure: false.
+                Action<long>? throttle = enableBackpressure
+                    ? (produced => WaitForCapacity(request.TransferId, produced, cancellationToken))
+                    : null;
                 var result = await archiveService.CreateCompressedAsync(
                     source,
                     credential,
@@ -108,7 +115,7 @@ public sealed class GatewayTransferService(
                     progress,
                     cancellationToken,
                     request.IncludedPaths,
-                    produced => WaitForCapacity(request.TransferId, produced, cancellationToken));
+                    throttle);
                 // SHA-256 is hashed incrementally during the build, not re-read afterwards: the consumer may
                 // already have punched holes into transferred regions, which would corrupt a post-hoc read.
                 await File.WriteAllTextAsync(MetricsPath(request.TransferId), JsonSerializer.Serialize(new GatewayArchiveMetrics(result.SourceBytes, result.StoredBytes, result.Sha256)), cancellationToken);
@@ -223,6 +230,37 @@ public sealed class GatewayTransferService(
         EnsureTransferId(transferId);
         var path = UploadPartialPath(transferId);
         return File.Exists(path) ? new FileInfo(path).Length : 0;
+    }
+
+    /// <summary>
+    /// Discard any partially-written streaming target checkpoint for this transfer, so a retry starts the
+    /// target from offset 0. Required because the sparse cache rebuilds the source archive from scratch on
+    /// retry — resuming onto a stale partial would splice mismatched bytes into a corrupt archive.
+    /// </summary>
+    public async Task ResetStreamingTargetAsync(string transferId, GatewayTargetRequest target, CancellationToken cancellationToken)
+    {
+        EnsureTransferId(transferId);
+        var fileName = $"task-{target.TaskId}-{transferId}{ArchiveExtension(target.Compression)}";
+        try
+        {
+            if (target.Kind == ObjectKind.LocalFolder)
+            {
+                var partial = Path.Combine(target.Location, fileName) + ".partial";
+                if (File.Exists(partial)) File.Delete(partial);
+                return;
+            }
+            if (target.Kind == ObjectKind.Smb)
+            {
+                (string Username, string Password)? credential = string.IsNullOrWhiteSpace(target.SmbUsername) || target.SmbPassword is null
+                    ? null
+                    : (target.SmbUsername!, target.SmbPassword!);
+                await smbClient.DeleteUploadPartialAsync(target.Location, fileName, credential, cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Streaming target checkpoint reset failed for transfer {TransferId}", transferId);
+        }
     }
 
     public Stream OpenSourceRange(string archivePath, long offset)

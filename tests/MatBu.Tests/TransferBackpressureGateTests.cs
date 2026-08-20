@@ -62,4 +62,50 @@ public sealed class TransferBackpressureGateTests
         // Backlog 1000 forces a wait; a cancelled token must break out rather than spin forever.
         Assert.Throws<OperationCanceledException>(() => gate.WaitForCapacity(1000, cts.Token));
     }
+
+    // Regression guard for the StreamLocalSourceToTargetAsync deadlock: a producer that crosses the high
+    // watermark stalls forever UNLESS the consumer advances ReportConsumed. This is exactly the invariant
+    // that broke when the throttle was wired in but ReportConsumed was not called on the local-stream path.
+    [Fact]
+    public void Producer_StallsForever_WhenConsumerNeverReports()
+    {
+        var gate = new TransferBackpressureGate(highWatermark: 1000, lowWatermark: 200, pollMilliseconds: 5);
+        using var cts = new CancellationTokenSource();
+        var producer = Task.Run(() =>
+        {
+            try { for (long produced = 100; produced <= 1_000_000; produced += 100) gate.WaitForCapacity(produced, cts.Token); }
+            catch (OperationCanceledException) { }
+        });
+
+        Assert.False(producer.Wait(TimeSpan.FromMilliseconds(500)), "producer must stall once backlog exceeds the high watermark and nothing is consumed");
+        Assert.True(gate.IsPaused);
+
+        cts.Cancel();
+        try { producer.Wait(TimeSpan.FromSeconds(2)); } catch { }
+    }
+
+    [Fact]
+    public void Producer_IsReleased_WhenConsumerReportsInLockstep()
+    {
+        var gate = new TransferBackpressureGate(highWatermark: 1000, lowWatermark: 200, pollMilliseconds: 5);
+        using var cts = new CancellationTokenSource();
+        var producer = Task.Run(() =>
+        {
+            for (long produced = 100; produced <= 5000; produced += 100) gate.WaitForCapacity(produced, cts.Token);
+        });
+        var consumer = Task.Run(async () =>
+        {
+            long consumed = 0;
+            while (!producer.IsCompleted && !cts.IsCancellationRequested)
+            {
+                await Task.Delay(5, cts.Token);
+                consumed += 400;
+                gate.ReportConsumed(consumed);
+            }
+        });
+
+        Assert.True(producer.Wait(TimeSpan.FromSeconds(5)), "producer must finish once the consumer keeps draining the backlog");
+        cts.Cancel();
+        try { consumer.Wait(TimeSpan.FromSeconds(2)); } catch { }
+    }
 }
