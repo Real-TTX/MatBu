@@ -4,6 +4,16 @@ MatBu (Matthix + Backup) ist die Basis für einen robusten Backup- und Sync-Serv
 
 Full-Archive erhalten eine SHA-256-Prüfsumme, die im Job gespeichert und bei Gateway-Transfers, lokalen Zielkopien sowie vor einem Restore erneut geprüft wird. Beschädigte oder unvollständige Transfers werden verworfen und über den vorhandenen Checkpoint-/Retry-Pfad neu übertragen.
 
+## Screenshots
+
+![Detailseite eines laufenden Jobs mit Echtzeit-Fortschritt](docs/images/job-detail.png)
+
+*Detailseite mit Gesamtfortschritt (%, Ø-Geschwindigkeit, Restzeit) und den drei Live-Pipeline-Stufen Lesen → Übertragen → Schreiben inkl. Abbrechen-Schaltfläche.*
+
+![Job-Historie mit Live-Fortschritt](docs/images/jobs-list.png)
+
+*Historie/Liste mit Live-Balken, Geschwindigkeit und Zuständen (laufend, fertig, abgebrochen).*
+
 ## Starten
 
 Die einfachste Production-Installation besteht aus einem Container für Oberfläche, Scheduler und Transfer-Worker:
@@ -72,6 +82,11 @@ Der Docker-Socket gewährt dem Container praktisch administrative Kontrolle übe
 - Monitoring-Health-Endpunkt mit persistentem Admin-Token
 - Full, Forward Incremental, Differential und Reverse Incremental mit SHA-256-Chunk-Katalogen
 - Proxmox VE als Quelle mit API-Token, VM-/CT-Auswahl und `vzdump`-Snapshots
+- Echtzeit-Job-Fortschritt: Gesamtbalken mit %, Ø-Speed und ETA sowie drei Pipeline-Stufen (Lesen/Übertragen/Schreiben) mit momentaner Geschwindigkeit – in Liste, Dashboard und Detailseite (1-2s-Polling)
+- Transfer-Backpressure und Sparse-Cache begrenzen den Cache-Bedarf der Secondary auf den un-übertragenen Rückstand
+- Free-Space-Guard auf den Primary-Empfangspfaden bricht kontrolliert ab, bevor der Cache-Datenträger vollläuft
+- Grazile Job-Abbrüche: laufende Ausführungen können abgebrochen werden (Zustand „Abgebrochen", kein Retry, Cleanup, Secondary-Abbruchsignal)
+- parallele Quellgrößen-Ermittlung, damit %/ETA verfügbar sind, ohne den Transferstart zu blockieren
 
 ## Proxmox VE als Quelle
 
@@ -119,6 +134,35 @@ https://pbs.example:8007/?datastore=main&pveStorage=pbs-main&namespace=customers
 `pveStorage` ist die Storage-ID, unter der derselbe PBS-Datastore bereits in PVE eingerichtet ist. Quelle und PBS-Ziel müssen derselben MatBu-Instanz zugeordnet sein. Bei einer Secondary startet diese den PVE-Task über ihre ausgehende Verbindung und sendet während langer Backups Heartbeats. Das PBS-Token benötigt Leserechte für Datastore-Status und Snapshots sowie die Berechtigung zum Entfernen abgelaufener Snapshots; das PVE-Token benötigt die Rechte zum Starten von `vzdump`. MatBu wendet die Task-Retention ausschließlich auf die nach dem Backup eindeutig katalogisierten Snapshots dieses Tasks an, überträgt diese Retention bei Bedarf über die ausgehende Secondary-Verbindung und protokolliert das Ergebnis im Job. Fremde Snapshots und ganze Backup-Gruppen werden nicht angetastet. Ein MatBu-Datei-Explorer für PBS-VM-Images wird erst angeboten, sobald der PBS-File-Restore vollständig integriert ist.
 
 Secondary-Command-Payloads werden mit den persistenten Data-Protection-Schlüsseln verschlüsselt gespeichert. API-Token und SMB-Passwörter liegen dadurch auch während wartender oder wiederaufzunehmender Remote-Jobs nicht im Klartext in SQLite.
+
+## Live-Fortschritt und Job-Abbruch
+
+Laufende Jobs zeigen ihren Fortschritt in Echtzeit. Auf der Detailseite gibt es einen Gesamtbalken mit Prozent, durchschnittlicher Geschwindigkeit und geschätzter Restzeit (ETA) sowie drei getrennte Pipeline-Stufen – **Lesen & Komprimieren**, **Überträgt** und **Schreibt Ziel** – jeweils mit Prozent, Bytes und *momentaner* Geschwindigkeit (gleitendes Fenster statt Durchschnitt seit Start). Ein Phase-Badge zeigt den aktuellen Zustand, inklusive „Lesen pausiert – Übertragung langsam", wenn die Backpressure greift. Liste und Dashboard zeigen den Gesamtbalken samt Speed/ETA/Phase. Die Aktualisierung erfolgt per Polling (Liste/Dashboard alle 2 s, Detailseite jede Sekunde); ein laufendes Kommando meldet zusätzlich in kurzen Abständen Heartbeats, damit lange, aber lebende Transfers nicht fälschlich als abgebrochen gelten.
+
+Die Quellgröße wird parallel zum Transfer ermittelt, sodass Lesen und Übertragen sofort starten und die Prozent-/ETA-Werte nachgeliefert werden, sobald die Größe feststeht (für LocalFolder-Quellen).
+
+Laufende Ausführungen lassen sich über den Abbrechen-Button in Liste, Dashboard und Detailseite stoppen (Administratoren und Operatoren; nicht für reine Benutzer-Rollen). Ein Abbruch ist grazil: der Lauf endet im Zustand **Abgebrochen** ohne automatischen Retry, Teilartefakte (Quell-Cache, Ziel-Checkpoint, Konsistenz-Lease) werden aufgeräumt, und ein auf einer Secondary laufendes Kommando wird über den Fortschritts-Kanal ebenfalls abgebrochen. Der Abbruchwunsch wird persistiert und überlebt einen Worker-Neustart.
+
+## Transfer-Cache und Backpressure
+
+Beim Gateway-Streaming baut die Secondary das Quellarchiv in einen lokalen Transfer-Cache (`<data>/transfer-cache`) und überträgt es parallel. Eine **Backpressure** drosselt den Archiv-Build, wenn der noch nicht übertragene Rückstand eine Schwelle übersteigt, und bereits übertragene Cache-Bereiche werden per Sparse-File-Hole-Punching physisch freigegeben. Dadurch bleibt der Cache-Bedarf der Secondary nahe am Rückstand statt bei der vollen Archivgröße.
+
+Auf den Primary-Empfangspfaden verhindert ein Free-Space-Guard, dass der Cache-Datenträger vollständig vollläuft: Unterschreitet der freie Platz die Sicherheitsreserve, wird der Transfer kontrolliert und wiederaufnehmbar abgebrochen statt mit einem harten „kein Speicherplatz"-Fehler.
+
+> **Bekannte Einschränkung:** Die Primary lagert ein empfangenes Full-Archiv derzeit vollständig im Cache zwischen. Ist der Cache-Datenträger der Primary kleiner als ein einzelnes komprimiertes Archiv, bricht ein solcher Lauf kontrolliert ab. Ein Streaming-Umbau des Primary-Empfangs (ohne vollständige Zwischenlagerung) ist geplant.
+
+Relevante Umgebungsvariablen:
+
+| Variable | Standard | Wirkung |
+| --- | --- | --- |
+| `MATBU_TRANSFER_BACKLOG_HIGH_MIB` | 512 | Rückstand, ab dem der Archiv-Build pausiert wird |
+| `MATBU_TRANSFER_BACKLOG_LOW_MIB` | 128 | Rückstand, bis zu dem gedrained wird, bevor der Build fortsetzt |
+| `MATBU_TRANSFER_SPARSE_CACHE` | an | `0` deaktiviert das Hole-Punching des Transfer-Caches |
+| `MATBU_MIN_FREE_SPACE_GIB` | 1/20 der Platte (512 MiB–5 GiB) | Sicherheitsreserve für Free-Space-Guard und Archiv-Build |
+| `MATBU_TRANSFER_CACHE_RETENTION_HOURS` | 168 (7 Tage) | Aufbewahrung verwaister Transfer-Cache-Dateien |
+| `MATBU_SECONDARY_COMMAND_IDLE_TIMEOUT_SECONDS` | 120 | Idle-Timeout eines Secondary-Kommandos ohne Fortschritt |
+| `MATBU_SECONDARY_HEARTBEAT_SECONDS` | 10 | Keepalive-Intervall während langer Build-/Schreibphasen |
+| `MATBU_SECONDARY_BUILD_STALL_SECONDS` | 1800 | Obergrenze ohne beobachtbaren Fortschritt, bevor der Watchdog greift |
 
 ## Monitoring-API
 
