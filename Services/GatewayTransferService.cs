@@ -137,6 +137,21 @@ public sealed class GatewayTransferService(
 
     public string SourceBuildingPath(string transferId) => SourceArchivePath(transferId) + ".building";
 
+    /// <summary>
+    /// Discard all cache artifacts for a cancelled transfer: the primary-written streaming target checkpoint
+    /// (named task-{TaskId}-{JobId}, resolved from the job) plus the gateway source archive/partial/metrics.
+    /// </summary>
+    public async Task CancelTransferAsync(long jobId, string transferId, CancellationToken cancellationToken)
+    {
+        EnsureTransferId(transferId);
+        if (jobId > 0)
+        {
+            var target = ResolveStreamingPrimaryTarget(jobId);
+            if (target is not null) await ResetStreamingTargetAsync(target, cancellationToken);
+        }
+        CleanupSourceArtifacts(transferId);
+    }
+
     public long CleanupSourceArtifacts(string transferId)
     {
         EnsureTransferId(transferId);
@@ -552,6 +567,9 @@ public sealed class GatewayTransferService(
         {
             var job = data.TransferJobs.FirstOrDefault(item => item.Id == jobId);
             if (job is null) return;
+            // Never resurrect a job that is already terminal or has a pending cancel: a late in-flight source
+            // chunk must not flip an "Abgebrochen"/"Fehler"/"Completed" job back to "Running".
+            if (job.CancelRequested || job.State is "Abgebrochen" or "Fehler" or "Failed" or "Completed") return;
             job.State = "Running";
             job.Phase = written < transferred ? JobPhase.Writing : JobPhase.Transferring;
             job.BytesTransferred = transferred;

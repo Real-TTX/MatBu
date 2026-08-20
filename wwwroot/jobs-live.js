@@ -3,7 +3,8 @@
   const formatDate = value => new Date(value).toLocaleString('de-DE');
   const formatBytes = value => value >= 1024 ** 4 ? `${(value / 1024 ** 4).toFixed(2)} TiB` : value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(2)} GiB` : value >= 1024 ** 2 ? `${(value / 1024 ** 2).toFixed(2)} MiB` : value >= 1024 ? `${(value / 1024).toFixed(1)} KiB` : `${value || 0} Bytes`;
   const formatRemaining = job => {
-    if (job.state === 'Failed' || job.state === 'Fehler') return 'Abgebrochen';
+    if (job.state === 'Failed' || job.state === 'Fehler') return 'Fehlgeschlagen';
+    if (job.state === 'Abgebrochen') return 'Abgebrochen';
     if (job.state === 'Completed') return 'Fertig';
     if (!job.totalBytes) return '—';
     const completedBytes = job.bytesWritten > 0 ? Math.min(job.bytesTransferred, job.bytesWritten) : job.bytesTransferred;
@@ -44,10 +45,12 @@
       const state = row.querySelector('[data-job-state] .status');
       if (state) {
         state.textContent = job.state;
-        const failed = job.state === 'Failed' || job.state === 'Fehler';
+        const failed = job.state === 'Failed' || job.state === 'Fehler' || job.state === 'Abgebrochen';
         const active = job.state === 'Running' || job.state === 'Queued';
         state.className = `status ${failed ? 'offline' : active ? 'warning' : ''}`;
       }
+      const cancelBtn = row.querySelector('[data-job-cancel]');
+      if (cancelBtn) cancelBtn.hidden = job.state !== 'Running';
       const phase = row.querySelector('[data-job-phase]');
       if (phase) {
         const active = job.state === 'Running' || job.state === 'Queued';
@@ -84,6 +87,19 @@
       if (estimate) estimate.textContent = `≈ ${formatBytes(job.estimatedStoredBytes)} gespeichert`;
     }
   };
+  document.addEventListener('click', async event => {
+    const btn = event.target.closest('[data-job-cancel]');
+    if (!btn) return;
+    event.preventDefault();
+    if (!window.confirm('Diese Ausführung wirklich abbrechen?')) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/transfer-jobs/${btn.dataset.jobCancel}/cancel`, { method: 'POST' });
+      if (!res.ok) btn.disabled = false;
+    } catch {
+      btn.disabled = false;
+    }
+  });
   refresh();
   window.setInterval(refresh, 2000);
 })();

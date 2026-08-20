@@ -4,7 +4,7 @@
   const jobId = root.dataset.jobId;
   const isCross = root.dataset.jobCross === '1';
 
-  const TERMINAL = new Set(['Completed', 'Failed', 'Fehler', 'Cancelled']);
+  const TERMINAL = new Set(['Completed', 'Failed', 'Fehler', 'Cancelled', 'Abgebrochen']);
   const fmtBytes = v => {
     v = v || 0;
     return v >= 1024 ** 4 ? `${(v / 1024 ** 4).toFixed(2)} TiB`
@@ -40,10 +40,11 @@
     const stateEl = root.querySelector('[data-job-state]');
     if (stateEl) {
       stateEl.textContent = job.state;
-      const failed = job.state === 'Failed' || job.state === 'Fehler';
+      const failed = job.state === 'Failed' || job.state === 'Fehler' || job.state === 'Abgebrochen';
       const active = job.state === 'Running' || job.state === 'Queued';
       stateEl.className = `status ${failed ? 'offline' : active ? 'warning' : ''}`;
     }
+    document.querySelectorAll('[data-job-cancel]').forEach(btn => { btn.hidden = job.state !== 'Running'; });
     const phaseEl = root.querySelector('[data-job-phase]');
     if (phaseEl) {
       const phase = job.phase && job.phase.trim() ? job.phase : job.state;
@@ -78,7 +79,8 @@
     const remainingEl = root.querySelector('[data-job-remaining]');
     if (remainingEl) {
       if (job.state === 'Completed') remainingEl.textContent = 'Fertig';
-      else if (job.state === 'Failed' || job.state === 'Fehler') remainingEl.textContent = 'Abgebrochen';
+      else if (job.state === 'Abgebrochen') remainingEl.textContent = 'Abgebrochen';
+      else if (job.state === 'Failed' || job.state === 'Fehler') remainingEl.textContent = 'Fehlgeschlagen';
       else if (target > 0 && avg > 0 && remaining > 0) remainingEl.textContent = `noch ${fmtDuration(remaining / avg)}`;
       else remainingEl.textContent = '—';
     }
@@ -152,6 +154,20 @@
     if (TERMINAL.has(job.state) && timer) { clearInterval(timer); timer = null; }
   };
 
+  document.addEventListener('click', async event => {
+    const btn = event.target.closest('[data-job-cancel]');
+    if (!btn) return;
+    event.preventDefault();
+    if (!window.confirm('Diese Ausführung wirklich abbrechen?')) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/transfer-jobs/${btn.dataset.jobCancel}/cancel`, { method: 'POST' });
+      if (!res.ok) btn.disabled = false;
+      else refresh();
+    } catch {
+      btn.disabled = false;
+    }
+  });
   refresh();
   timer = window.setInterval(refresh, 1000);
 })();

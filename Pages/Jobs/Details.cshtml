@@ -15,6 +15,10 @@
         <p>Ausführung #@Model.Job.Id · Versuch @Math.Max(1, Model.Job.Attempt) · Transfer-ID @Model.Job.TransferId</p>
     </div>
     <div class="button-row">
+        @if (Model.Job.State == "Running" && Model.CurrentUser?.Role != MatBu.Models.UserRole.User)
+        {
+            <button class="button" type="button" data-job-cancel="@Model.Job.Id">Ausführung abbrechen</button>
+        }
         <a class="button" asp-page="/Jobs">← Zur Historie</a>
     </div>
 </div>
@@ -64,7 +68,7 @@
 
 @{
     var isActive = Model.Job.State is "Running" or "Queued";
-    var stateClass = Model.Job.State is "Failed" or "Fehler" ? "offline" : isActive ? "warning" : "";
+    var stateClass = Model.Job.State is "Failed" or "Fehler" or "Abgebrochen" ? "offline" : isActive ? "warning" : "";
     var phaseText = string.IsNullOrWhiteSpace(Model.Job.Phase) ? Model.Job.State : Model.Job.Phase;
     var readPercent = Pct(Model.Job.BytesRead, Model.Job.EstimatedSourceBytes);
     var transferPercent = Pct(Model.Job.BytesTransferred, Model.Job.EstimatedStoredBytes);

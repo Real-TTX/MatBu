@@ -195,6 +195,8 @@ app.MapPost("/api/secondary/commands/{commandId:long}/complete", async (long com
 });
 app.MapPost("/api/secondary/commands/{commandId:long}/progress", (long commandId, SecondaryCommandProgress progress, HttpContext context, SecondaryCommandService commands) =>
 {
+    // Back-channel stop directive: if the command was cancelled, tell the secondary to abort on its heartbeat.
+    if (commands.IsCancelRequested(commandId)) return Results.Conflict(new { message = "Kommando abgebrochen." });
     var changed = commands.UpdateProgress(context.Request.Headers["X-MatBu-Instance-Token"].FirstOrDefault() ?? "", commandId, progress);
     return changed ? Results.Ok() : Results.NotFound();
 });
@@ -338,6 +340,35 @@ app.MapGet("/api/transfer-jobs/{id:long}", (long id, PersistentStore store) =>
             job,
             steps = data.JobSteps.Where(x => x.TransferJobId == id).OrderBy(x => x.Sequence)
         });
+});
+app.MapPost("/api/transfer-jobs/{id:long}/cancel", (long id, HttpContext context, PersistentStore store) =>
+{
+    // Role gate is in-handler: the shared write-guard middleware only covers /api/tasks and /api/objects.
+    var user = CurrentUser(context, store);
+    if (user is null) return Results.Unauthorized();
+    // Results.Forbid() throws when no auth scheme is registered (there is none); return an explicit 403.
+    if (user.Role == UserRole.User) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var job = store.Read().TransferJobs.FirstOrDefault(x => x.Id == id);
+    if (job is null) return Results.NotFound();
+    if (job.State != "Running") return Results.Conflict(new { message = "Nur laufende Ausführungen können abgebrochen werden." });
+    var applied = false;
+    store.Update(data =>
+    {
+        var current = data.TransferJobs.FirstOrDefault(x => x.Id == id);
+        if (current is null || current.State != "Running") return; // re-check inside the transaction (cancel-vs-completion race)
+        current.CancelRequested = true;
+        current.Phase = JobPhase.Cancelling;
+        current.UpdateDate = DateTimeOffset.UtcNow;
+        foreach (var command in data.SecondaryCommands.Where(c => c.TransferId == current.TransferId && c.State is "Queued" or "Running"))
+        {
+            command.CancelRequested = true;
+            command.UpdateDate = DateTimeOffset.UtcNow;
+        }
+        applied = true;
+    });
+    return applied
+        ? Results.Ok(new { message = "Abbruch angefordert." })
+        : Results.Conflict(new { message = "Nur laufende Ausführungen können abgebrochen werden." });
 });
 app.MapPost("/api/tasks/{id:long}/run", (long id, PersistentStore store) =>
 {

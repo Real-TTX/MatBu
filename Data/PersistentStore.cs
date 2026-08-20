@@ -92,6 +92,8 @@ public sealed class PersistentStore
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN WriteSpeedBytesPerSecond INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN Phase TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN EstimatedSourceBytes INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN CancelRequested INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE SecondaryCommand ADD COLUMN CancelRequested INTEGER NOT NULL DEFAULT 0"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN SourceSelectionJson TEXT NOT NULL DEFAULT '[]'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyMode TEXT NOT NULL DEFAULT 'None'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyContainerNames TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }

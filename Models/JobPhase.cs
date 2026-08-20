@@ -20,4 +20,6 @@ public static class JobPhase
     public const string Finalizing = "Abschluss";
     public const string Completed = "Fertig";
     public const string Failed = "Fehlgeschlagen";
+    public const string Cancelling = "Wird abgebrochen";
+    public const string Cancelled = "Abgebrochen";
 }

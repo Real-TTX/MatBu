@@ -120,6 +120,7 @@ public sealed class TransferJob
     public string ArchiveSha256 { get; set; } = "";
     public bool RetentionExpired { get; set; }
     public string Error { get; set; } = "";
+    public bool CancelRequested { get; set; }
     public DateTimeOffset CreateDate { get; set; }
     public DateTimeOffset UpdateDate { get; set; }
 }
@@ -149,6 +150,7 @@ public sealed class SecondaryCommand : AuditedEntity
     public long SpeedBytesPerSecond { get; set; }
     public string ResultJson { get; set; } = "";
     public string Error { get; set; } = "";
+    public bool CancelRequested { get; set; }
 }
 
 public sealed class BackupTask : AuditedEntity

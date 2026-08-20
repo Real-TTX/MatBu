@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -36,6 +38,8 @@ public sealed class SecondaryConnectionWorker(
     }
     private readonly string _primaryEndpoint = (Environment.GetEnvironmentVariable("MATBU_PRIMARY_ENDPOINT") ?? "").TrimEnd('/');
     private readonly string? _token = Environment.GetEnvironmentVariable("MATBU_INSTANCE_TOKEN");
+    // Per-command cancellation, so a 409 stop directive on the /progress back-channel can abort the in-flight command.
+    private readonly ConcurrentDictionary<long, CancellationTokenSource> _commandCts = new();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -80,8 +84,11 @@ public sealed class SecondaryConnectionWorker(
         return await response.Content.ReadFromJsonAsync<SecondaryCommandEnvelope>(JsonOptions, cancellationToken);
     }
 
-    private async Task HandleAsync(HttpClient client, SecondaryCommandEnvelope command, CancellationToken cancellationToken)
+    private async Task HandleAsync(HttpClient client, SecondaryCommandEnvelope command, CancellationToken appCancellation)
     {
+        using var cmdCts = CancellationTokenSource.CreateLinkedTokenSource(appCancellation);
+        _commandCts[command.Id] = cmdCts;
+        var cancellationToken = cmdCts.Token;
         try
         {
             switch (command.Kind)
@@ -314,11 +321,27 @@ public sealed class SecondaryConnectionWorker(
                 default: throw new InvalidOperationException($"Unbekannter Secondary-Befehl: {command.Kind}");
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException) when (cmdCts.IsCancellationRequested && !appCancellation.IsCancellationRequested)
+        {
+            // User-initiated cancel: report it (Complete maps it to "Cancelled" via the command flag) and
+            // reclaim the secondary's source cache. The command handlers' own finally blocks release any lease.
+            logger.LogInformation("Secondary command {CommandId} was cancelled by the user", command.Id);
+            if (command.Kind is SecondaryCommandKind.ExportSource or SecondaryCommandKind.StreamSourceToTarget
+                && Guid.TryParse(command.TransferId, out _))
+            {
+                try { transfers.CleanupSourceArtifacts(command.TransferId); } catch (Exception cleanupEx) { logger.LogWarning(cleanupEx, "Cancel cleanup failed for {CommandId}", command.Id); }
+            }
+            await CompleteAsync(client, command.Id, false, "", "Vom Benutzer abgebrochen", CancellationToken.None);
+        }
+        catch (OperationCanceledException) when (appCancellation.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Secondary command {CommandId} failed", command.Id);
             await CompleteAsync(client, command.Id, false, "", ex.Message, CancellationToken.None);
+        }
+        finally
+        {
+            _commandCts.TryRemove(command.Id, out _);
         }
     }
 
@@ -808,6 +831,12 @@ public sealed class SecondaryConnectionWorker(
         AddToken(request);
         request.Content = JsonContent.Create(new SecondaryCommandProgress(bytes, total, speed, "Secondary-Verbindung", bytesRead, bytesWritten, readSpeed, writeSpeed, phase, estimatedSource, estimatedStored));
         using var response = await client.SendAsync(request, cancellationToken);
+        // A 409 on the heartbeat is the primary's stop directive for a user-cancelled command: abort this command.
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (_commandCts.TryGetValue(commandId, out var cts)) cts.Cancel();
+            throw new OperationCanceledException($"Secondary-Kommando {commandId} wurde abgebrochen.");
+        }
         response.EnsureSuccessStatusCode();
     }
 

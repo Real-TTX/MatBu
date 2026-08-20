@@ -171,6 +171,14 @@ public sealed class BackupTaskExecutor(
                 targetInstance.Name,
                 destination);
         }
+        catch (OperationCanceledException) when (ReadJob(job.Id).CancelRequested)
+        {
+            // User-initiated cancel — the persisted flag is authoritative and covers both cancellation
+            // sources (the per-job linked token AND a secondary command reporting "Cancelled", which throws
+            // an OCE from WaitForCompletionAsync possibly before the 1s worker watcher trips the token).
+            await CancelJobAsync(task, job, cachePath, partialPath);
+            return;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             AppendStep(job.Id, "Abschluss", "Cancelled", "Backup wurde durch das Beenden der Instanz unterbrochen und bleibt fortsetzbar.", "Primary", partialPath);
@@ -179,6 +187,14 @@ public sealed class BackupTaskExecutor(
         }
         catch (Exception ex)
         {
+            // If the user requested a cancel, a non-OCE error thrown in the same window is still a cancel —
+            // finalize as "Abgebrochen" instead of "Fehler"+retry (which would leave the flag set, self-cancel
+            // the retry, and emit a spurious failure notification).
+            if (ReadJob(job.Id).CancelRequested)
+            {
+                await CancelJobAsync(task, job, cachePath, partialPath);
+                return;
+            }
             var currentJob = ReadJob(job.Id);
             var incrementalCheckpoint = string.IsNullOrWhiteSpace(currentJob.TransferId)
                 ? string.Empty
@@ -988,12 +1004,38 @@ public sealed class BackupTaskExecutor(
             if (task is null) return;
             task.State = state;
             task.UpdateDate = DateTimeOffset.UtcNow;
-            if (state is "Gesichert" or "Fehler")
+            if (state is "Gesichert" or "Fehler" or "Abgebrochen")
             {
                 task.LastRun = DateTimeOffset.UtcNow;
                 task.NextRetryDate = null;
             }
         });
+    }
+
+    private async Task CancelJobAsync(BackupTask task, TransferJob job, string cachePath, string partialPath)
+    {
+        var current = ReadJob(job.Id);
+        if (Guid.TryParse(current.TransferId, out _))
+        {
+            try { await transfers.CancelTransferAsync(job.Id, current.TransferId, CancellationToken.None); }
+            catch (Exception ex) { logger.LogWarning(ex, "Cancel cleanup of transfer artifacts failed for job {JobId}", job.Id); }
+            if (BackupMethodPolicy.IsChunked(task.Method))
+                TryDeleteDirectory(incrementalSources.TransferDirectory(current.TransferId));
+        }
+        TryDelete(cachePath);
+        TryDelete(partialPath);
+        MarkJob(job.Id, "Abgebrochen", current.BytesTransferred, current.TotalBytes, cachePath, speed: 0);
+        store.Update(data =>
+        {
+            var stored = data.TransferJobs.FirstOrDefault(item => item.Id == job.Id);
+            if (stored is null) return;
+            stored.Phase = JobPhase.Cancelled;
+            stored.CancelRequested = false;
+            stored.UpdateDate = DateTimeOffset.UtcNow;
+        });
+        MarkTask(task.Id, "Abgebrochen");
+        AppendStep(job.Id, "Abschluss", "Cancelled", "Backup wurde auf Benutzerwunsch abgebrochen; Teilartefakte wurden entfernt.", "Primary", cachePath);
+        logger.LogInformation("Task {TaskId} ({TaskName}) job {JobId} was cancelled by the user", task.Id, task.Name, job.Id);
     }
 
     private RetryScheduleResult ScheduleRetry(long taskId, int attempt)
@@ -1044,6 +1086,7 @@ public sealed class BackupTaskExecutor(
             {
                 "Completed" => JobPhase.Completed,
                 "Fehler" or "Failed" => JobPhase.Failed,
+                "Abgebrochen" => JobPhase.Cancelled,
                 _ => job.Phase
             };
             job.BytesTransferred = bytes;

@@ -76,8 +76,15 @@ public sealed class SecondaryCommandService(PersistentStore store)
             currentInstance.UpdateDate = now;
 
             var staleBefore = now.AddSeconds(-30);
-            foreach (var stale in data.SecondaryCommands.Where(x => x.State == "Running" && x.UpdateDate < staleBefore)) stale.State = "Queued";
-            leased = data.SecondaryCommands.Where(x => x.InstanceId == instance.Id && x.State == "Queued").OrderBy(x => x.Id).FirstOrDefault();
+            // Do not resurrect a cancel-requested command via the stale-requeue sweep.
+            foreach (var stale in data.SecondaryCommands.Where(x => x.State == "Running" && !x.CancelRequested && x.UpdateDate < staleBefore)) stale.State = "Queued";
+            // A queued command that was cancelled before it ever started is finalized without running.
+            foreach (var cancelledQueued in data.SecondaryCommands.Where(x => x.InstanceId == instance.Id && x.State == "Queued" && x.CancelRequested))
+            {
+                cancelledQueued.State = "Cancelled";
+                cancelledQueued.UpdateDate = now;
+            }
+            leased = data.SecondaryCommands.Where(x => x.InstanceId == instance.Id && x.State == "Queued" && !x.CancelRequested).OrderBy(x => x.Id).FirstOrDefault();
             if (leased is null) return;
             var current = data.SecondaryCommands.First(x => x.Id == leased.Id);
             current.State = "Running";
@@ -108,6 +115,10 @@ public sealed class SecondaryCommandService(PersistentStore store)
             {
                 missingSince = null;
                 if (command.State is "Completed" or "Failed") return command;
+                // A user-cancelled command is terminal; surface it as cancellation so the primary unwinds
+                // its own transfer instead of waiting for the idle timeout.
+                if (command.State == "Cancelled")
+                    throw new OperationCanceledException($"Secondary-Kommando {commandId} wurde abgebrochen.");
                 if (DateTimeOffset.UtcNow - command.UpdateDate > inactivityTimeout)
                     throw new TimeoutException($"Secondary-Kommando {commandId} hat seit {inactivityTimeout.TotalSeconds:0} Sekunden keinen Fortschritt gemeldet.");
             }
@@ -123,6 +134,8 @@ public sealed class SecondaryCommandService(PersistentStore store)
             : TimeSpan.FromMinutes(2);
     }
 
+    public bool IsCancelRequested(long id) => Get(id)?.CancelRequested == true;
+
     public bool Complete(string token, long commandId, bool success, string resultJson, string error)
     {
         if (FindInstance(token) is null) return false;
@@ -131,7 +144,10 @@ public sealed class SecondaryCommandService(PersistentStore store)
         {
             var command = data.SecondaryCommands.FirstOrDefault(x => x.Id == commandId);
             if (command is null) return;
-            command.State = success ? "Completed" : "Failed";
+            // Keep an already-cancelled command terminal, and map a failure caused by a cancel to "Cancelled"
+            // rather than "Failed" so it is not treated as an error downstream.
+            if (command.State == "Cancelled") { changed = true; return; }
+            command.State = success ? "Completed" : (command.CancelRequested ? "Cancelled" : "Failed");
             command.ResultJson = resultJson ?? "";
             command.Error = error ?? "";
             command.UpdateDate = DateTimeOffset.UtcNow;

@@ -58,6 +58,10 @@
                 <td class="action-cell">
                     <div class="row-actions">
                         <a class="icon-action primary" asp-page="/Jobs/Details" asp-route-id="@item.Id" title="Protokoll und Details" aria-label="Ausführung @item.Id öffnen"><svg class="ui-icon"><use href="#icon-log"></use></svg></a>
+                        @if (item.State == "Running" && Model.CurrentUser?.Role != UserRole.User)
+                        {
+                            <button class="icon-action" type="button" data-job-cancel="@item.Id" title="Abbrechen" aria-label="Ausführung @item.Id abbrechen"><svg class="ui-icon"><use href="#icon-stop"></use></svg></button>
+                        }
                         @if (item.State == "Fehler" && item.TaskId > 0 && Model.CurrentUser?.Role != UserRole.User)
                         {
                             <form method="post" asp-page-handler="Retry" asp-route-taskId="@item.TaskId" asp-route-LabelId="@Model.LabelId"><button class="icon-action" type="submit" title="Wiederholen" aria-label="Ausführung @item.Id wiederholen"><svg class="ui-icon"><use href="#icon-retry"></use></svg></button></form>
@@ -82,13 +86,14 @@
 }
 
 @functions {
-    static string StatusClass(string state) => state is "Fehler" or "Failed" ? "offline" : state is "Running" or "Queued" ? "warning" : "";
+    static string StatusClass(string state) => state is "Fehler" or "Failed" or "Abgebrochen" ? "offline" : state is "Running" or "Queued" ? "warning" : "";
     string FormatSpeed(long value) => value <= 0 ? "—" : value >= 1024 * 1024 ? $"{value / 1024d / 1024d:0.0} MB/s" : $"{value / 1024d:0.0} KB/s";
     string CompressionName(BackupCompression value) => value switch { BackupCompression.Fast => "Brotli schnell", BackupCompression.Balanced => "Brotli ausgewogen", BackupCompression.Maximum => "Brotli maximal", _ => "Unkomprimiert" };
     string CompressionRate(TransferJob job) => job.SourceBytes <= 0 ? "—" : $"{job.StoredBytes * 100d / job.SourceBytes:0.0}%";
     string FormatRemaining(string state, long bytes, long total, long speed)
     {
-        if (state is "Fehler" or "Failed") return "Abgebrochen";
+        if (state is "Fehler" or "Failed") return "Fehlgeschlagen";
+        if (state is "Abgebrochen") return "Abgebrochen";
         if (state is "Completed") return "Fertig";
         if (total <= 0 || bytes >= total || speed <= 0) return total > 0 && bytes >= total ? "Fertig" : "—";
         var seconds = (long)Math.Ceiling((double)(total - bytes) / speed);
