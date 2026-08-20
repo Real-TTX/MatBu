@@ -628,6 +628,9 @@ public sealed class BackupTaskExecutor(
         CancellationToken cancellationToken)
     {
         var transferId = EnsureTransferId(job);
+        // A retry reuses the same job/transferId and rebuilds a byte-different source; drop any stale target
+        // checkpoint up front so a failure during rebuild can never leave a partial for a later splice.
+        await transfers.ResetStreamingTargetAsync(job.Id, cancellationToken);
         var credential = store.GetSmbCredential(source.Id);
         var request = new GatewaySourceRequest(
             transferId,

@@ -248,6 +248,18 @@ public sealed class GatewayTransferService(
     }
 
     /// <summary>
+    /// Discard the streaming-primary target checkpoint for a job (LocalFolder/Smb), resolved from the job's
+    /// target. Called proactively at the start of a streamed run so a stale partial — or a finalized-but-
+    /// failed destination — from a prior attempt cannot be spliced onto or re-acknowledged by a rebuilt source.
+    /// </summary>
+    public async Task ResetStreamingTargetAsync(long jobId, CancellationToken cancellationToken)
+    {
+        if (jobId <= 0) return;
+        var target = ResolveStreamingPrimaryTarget(jobId);
+        if (target is not null) await ResetStreamingTargetAsync(target, cancellationToken);
+    }
+
+    /// <summary>
     /// Discard any partially-written streaming target checkpoint for this transfer, so a retry starts the
     /// target from offset 0. Required because the sparse cache rebuilds the source archive from scratch on
     /// retry — resuming onto a stale partial would splice mismatched bytes into a corrupt archive.
@@ -287,6 +299,16 @@ public sealed class GatewayTransferService(
     public async Task<long> GetSourceOffsetAsync(string transferId, string expectedSha256, CancellationToken cancellationToken)
     {
         EnsureTransferId(transferId);
+        // LocalFolder streaming-primary keeps no cache file; the resume offset comes from the live receive
+        // state, or from the finalized target. A restart (no in-memory hash chain) must restart from 0.
+        var job = store.Read().TransferJobs.FirstOrDefault(j => j.TransferId.Equals(transferId, StringComparison.OrdinalIgnoreCase));
+        if (job is not null && ResolveLocalFolderStreamingPrimary(job.Id) is { } localTarget)
+        {
+            var destinationPartial = localTarget.Destination + ".partial";
+            if (File.Exists(destinationPartial)) return new FileInfo(destinationPartial).Length;
+            if (File.Exists(localTarget.Destination)) return new FileInfo(localTarget.Destination).Length;
+            return 0;
+        }
         var partial = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar.partial");
         var final = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar");
         if (File.Exists(partial)) return new FileInfo(partial).Length;
@@ -325,9 +347,15 @@ public sealed class GatewayTransferService(
         await gate.WaitAsync(cancellationToken);
         try
         {
+            // Resolve the streaming-primary target once per chunk (one store read) and reuse it below.
+            var target = jobId > 0 ? ResolveStreamingPrimaryTarget(jobId) : null;
+            // Direct-to-target streaming for a LocalFolder primary target: write chunks straight to the
+            // target file, keeping NO full copy in the transfer cache (footprint 1x on the target disk).
+            if (target?.Object.Kind == ObjectKind.LocalFolder)
+                return await ReceiveSourceChunkToLocalTargetAsync(transferId, offset, final, jobId, totalBytes, expectedSha256, target, body, cancellationToken);
+
             var partial = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar.partial");
             Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
-            var target = jobId > 0 ? ResolveStreamingPrimaryTarget(jobId) : null;
             var completedArchive = SourceArchivePath(transferId);
             if (!File.Exists(partial) && File.Exists(completedArchive))
             {
@@ -408,6 +436,104 @@ public sealed class GatewayTransferService(
             return new GatewayUploadResult(true, current, true, "Source-Transfer abgeschlossen.");
         }
         finally { gate.Release(); }
+    }
+
+    // Streams received source chunks directly onto a LocalFolder target's .partial with NO transfer-cache
+    // copy. The resume offset is the physical .partial length (no in-memory state), and the final chunk
+    // RE-READS the finished file to verify SHA-256 before publishing — identical, proven integrity semantics
+    // to the cache path, just written straight to the target (no holes, so a whole-file read is valid).
+    // Called with the per-transfer gate already held.
+    private async Task<GatewayUploadResult> ReceiveSourceChunkToLocalTargetAsync(
+        string transferId, long offset, bool final, long jobId, long totalBytes, string expectedSha256,
+        StreamingPrimaryTarget target, Stream body, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(target.Object.Location);
+        var destination = target.Destination;
+        var partial = destination + ".partial";
+
+        // Already finalized (duplicate final chunk after completion). The destination is unique per job
+        // (task-{TaskId}-{JobId}). Re-verify its SHA before re-acknowledging: normally the retry reset
+        // already deleted any stale destination, but if that delete ever failed (e.g. a locked file) this
+        // catches a stale/mismatched destination and forces a rebuild instead of stamping a new SHA over
+        // old bytes — a loud stall rather than silent corruption.
+        if (!File.Exists(partial) && File.Exists(destination))
+        {
+            var completedLength = new FileInfo(destination).Length;
+            if (completedLength != offset)
+                return new GatewayUploadResult(false, completedLength, false, "Der abgeschlossene Ziel-Checkpoint hat einen anderen Offset.");
+            if (!final)
+                return new GatewayUploadResult(true, completedLength, false, "Ziel ist bereits vollstaendig geschrieben.");
+            if (completedLength != totalBytes || !ArchiveIntegrity.IsSha256(expectedSha256))
+            {
+                try { File.Delete(destination); } catch { }
+                return new GatewayUploadResult(false, 0, false, "Abgeschlossenes Ziel passt nicht; der Transfer wird neu aufgebaut.");
+            }
+            try
+            {
+                await ArchiveIntegrity.VerifySha256Async(destination, expectedSha256, cancellationToken);
+            }
+            catch (InvalidDataException)
+            {
+                try { File.Delete(destination); } catch { }
+                return new GatewayUploadResult(false, 0, false, "Abgeschlossenes Ziel hat eine falsche Pruefsumme; der Transfer wird neu aufgebaut.");
+            }
+            UpdatePipelineJob(jobId, transferId, completedLength, completedLength, totalBytes, destination);
+            MarkStreamingTargetFinal(jobId, expectedSha256, destination);
+            return new GatewayUploadResult(true, completedLength, true, "Ziel war bereits abgeschlossen und wurde bestaetigt.");
+        }
+
+        // Resume offset is the physical partial length — the single source of truth (survives restarts and
+        // needs no in-memory state). A checkpoint mismatch tells the secondary to re-align.
+        var current = File.Exists(partial) ? new FileInfo(partial).Length : 0;
+        if (current != offset)
+            return new GatewayUploadResult(false, current, false, "Der Ziel-Checkpoint stimmt nicht mit der Primary ueberein.");
+
+        if (!final)
+        {
+            archiveService.EnsureFreeSpace(target.Object.Location, 4 * 1024 * 1024);
+            await using (var output = new FileStream(partial, FileMode.Append, FileAccess.Write, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await body.CopyToAsync(output, 4 * 1024 * 1024, cancellationToken);
+                await output.FlushAsync(cancellationToken);
+            }
+            current = new FileInfo(partial).Length;
+            UpdatePipelineJob(jobId, transferId, current, current, totalBytes, partial);
+            return new GatewayUploadResult(true, current, false, "Ziel-Chunk gespeichert.");
+        }
+
+        // Final chunk (empty body): validate the physical size, then RE-READ and SHA-verify the actual file
+        // before atomically publishing it. On any mismatch the partial is discarded so nothing corrupt lands.
+        if (current != totalBytes || !ArchiveIntegrity.IsSha256(expectedSha256))
+        {
+            try { File.Delete(partial); } catch { }
+            return new GatewayUploadResult(false, 0, false, "Finale Ziel-Metadaten sind ungueltig.");
+        }
+        try
+        {
+            await ArchiveIntegrity.VerifySha256Async(partial, expectedSha256, cancellationToken);
+        }
+        catch (InvalidDataException ex)
+        {
+            try { File.Delete(partial); } catch { }
+            return new GatewayUploadResult(false, 0, false, ex.Message);
+        }
+        File.Move(partial, destination, overwrite: true);
+        UpdatePipelineJob(jobId, transferId, current, current, totalBytes, destination);
+        MarkStreamingTargetFinal(jobId, expectedSha256, destination);
+        return new GatewayUploadResult(true, current, true, "Ziel-Transfer abgeschlossen.");
+    }
+
+    private void MarkStreamingTargetFinal(long jobId, string expectedSha256, string destination)
+    {
+        if (jobId <= 0) return;
+        store.Update(data =>
+        {
+            var job = data.TransferJobs.FirstOrDefault(x => x.Id == jobId);
+            if (job is null) return;
+            job.ArchiveSha256 = expectedSha256.ToLowerInvariant();
+            job.ResolvedDestination = destination;
+            job.UpdateDate = DateTimeOffset.UtcNow;
+        });
     }
 
     public Task<string> ApplyTargetArchiveAsync(string archivePath, string transferId, GatewayTargetRequest target, CancellationToken cancellationToken) => StoreTargetAsync(archivePath, transferId, target, cancellationToken);
@@ -517,6 +643,14 @@ public sealed class GatewayTransferService(
         return new StreamingPrimaryTarget(target, store.GetSmbCredential(target.Id), fileName, destination);
     }
 
+    // The direct-to-target streaming receive (no cache copy) only applies to LocalFolder targets; SMB and
+    // everything else keep the existing cache-staged path.
+    private StreamingPrimaryTarget? ResolveLocalFolderStreamingPrimary(long jobId)
+    {
+        var target = ResolveStreamingPrimaryTarget(jobId);
+        return target?.Object.Kind == ObjectKind.LocalFolder ? target : null;
+    }
+
     private async Task<long> SyncStreamingTargetAsync(
         StreamingPrimaryTarget target,
         string sourcePath,
@@ -547,6 +681,11 @@ public sealed class GatewayTransferService(
             {
                 var partial = target.Destination + ".partial";
                 if (File.Exists(partial)) File.Delete(partial);
+                // Also drop a finalized destination from a prior failed attempt of the SAME job (the filename
+                // is job-unique task-{TaskId}-{JobId}). Otherwise a retry that rebuilds a byte-different source
+                // would re-acknowledge stale bytes under the new SHA (silent corruption) or stall. The direct
+                // route has no full cache to re-verify against, so the clean-slate reset is the safety net.
+                if (File.Exists(target.Destination)) File.Delete(target.Destination);
                 return;
             }
             await smbClient.DeleteUploadPartialAsync(target.Object.Location, target.FileName, target.Credential, cancellationToken);

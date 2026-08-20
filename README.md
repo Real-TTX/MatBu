@@ -85,6 +85,7 @@ Der Docker-Socket gewährt dem Container praktisch administrative Kontrolle übe
 - Echtzeit-Job-Fortschritt: Gesamtbalken mit %, Ø-Speed und ETA sowie drei Pipeline-Stufen (Lesen/Übertragen/Schreiben) mit momentaner Geschwindigkeit – in Liste, Dashboard und Detailseite (1-2s-Polling)
 - Transfer-Backpressure und Sparse-Cache begrenzen den Cache-Bedarf der Secondary auf den un-übertragenen Rückstand
 - Free-Space-Guard auf den Primary-Empfangspfaden bricht kontrolliert ab, bevor der Cache-Datenträger vollläuft
+- Direkt-ins-Ziel-Streaming für LocalFolder-Ziele: kein zweites vollständiges Cache-Duplikat auf der Primary (Footprint ~1× statt ~2×), Integrität via Zurücklesen + SHA-256
 - Grazile Job-Abbrüche: laufende Ausführungen können abgebrochen werden (Zustand „Abgebrochen", kein Retry, Cleanup, Secondary-Abbruchsignal)
 - parallele Quellgrößen-Ermittlung, damit %/ETA verfügbar sind, ohne den Transferstart zu blockieren
 
@@ -149,7 +150,9 @@ Beim Gateway-Streaming baut die Secondary das Quellarchiv in einen lokalen Trans
 
 Auf den Primary-Empfangspfaden verhindert ein Free-Space-Guard, dass der Cache-Datenträger vollständig vollläuft: Unterschreitet der freie Platz die Sicherheitsreserve, wird der Transfer kontrolliert und wiederaufnehmbar abgebrochen statt mit einem harten „kein Speicherplatz"-Fehler.
 
-> **Bekannte Einschränkung:** Die Primary lagert ein empfangenes Full-Archiv derzeit vollständig im Cache zwischen. Ist der Cache-Datenträger der Primary kleiner als ein einzelnes komprimiertes Archiv, bricht ein solcher Lauf kontrolliert ab. Ein Streaming-Umbau des Primary-Empfangs (ohne vollständige Zwischenlagerung) ist geplant.
+Bei einem **LocalFolder-Ziel auf der Primary** schreibt der Empfang die eintreffenden Chunks jetzt **direkt in die Zieldatei**, ohne eine zweite vollständige Kopie im Transfer-Cache zu halten. Der Primary-Footprint entspricht damit 1× der Archivgröße (nur die Zieldatei) statt vormals ~2×; die Integrität wird durch erneutes Lesen und SHA-256-Prüfung der fertigen Zieldatei vor dem atomaren Umbenennen sichergestellt. Große VM-Archive laufen so auch dann durch, wenn der Transfer-Cache-Datenträger kleiner als das Archiv ist.
+
+> **SMB-Ziele:** Für SMB-Ziele wird weiterhin über den Transfer-Cache übertragen (smbclient benötigt die vollständige lokale Datei). Wer den doppelten Footprint bei großen SMB-Zielen vermeiden möchte, bindet die Freigabe als CIFS-Mount ein und konfiguriert sie als `LocalFolder`-Ziel — damit greift automatisch der Direkt-ins-Ziel-Pfad.
 
 Relevante Umgebungsvariablen:
 

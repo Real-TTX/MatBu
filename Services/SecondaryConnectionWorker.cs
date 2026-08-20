@@ -471,6 +471,11 @@ public sealed class SecondaryConnectionWorker(
 
                 var result = await SendSourceChunkAsync(client, command, jobId, offset, -1, "", false, buffer, cancellationToken);
                 if (!result.Success && result.Offset == offset) throw new IOException(result.Message);
+                // The primary is the authoritative offset, but a BACKWARD jump mid-session means it reset the
+                // target; our own source cache has already been sparse-punched up to `offset`, so re-reading
+                // from an earlier offset would return zeros from a hole. Fail fatally and let the retry rebuild.
+                if (result.Offset < offset)
+                    throw new IOException("Primary hat den Offset zurueckgesetzt; der Transfer wird neu aufgebaut.");
                 offset = result.Offset;
                 transfers.ReportConsumed(command.TransferId, offset);
                 releasedUpTo = transfers.ReleaseConsumedSpace(availablePath, offset, releasedUpTo);

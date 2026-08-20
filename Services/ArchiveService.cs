@@ -378,9 +378,16 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
     /// Used by the primary receive paths, which otherwise have no disk bound, so the volume is never filled
     /// to zero: a resumable abort + retry instead of a raw ENOSPC failure.
     /// </summary>
-    public void EnsureCacheFreeSpace(long pendingBytes)
+    public void EnsureCacheFreeSpace(long pendingBytes) => EnsureFreeSpace(CacheDirectory, pendingBytes);
+
+    /// <summary>
+    /// Throw a controlled IOException if the drive holding <paramref name="path"/> is at/below the MatBu
+    /// free-space reserve. Used where data lands (transfer cache, or the target when streaming directly to
+    /// it) so the volume is never filled to zero: a resumable abort + retry instead of a raw ENOSPC failure.
+    /// </summary>
+    public void EnsureFreeSpace(string path, long pendingBytes)
     {
-        var drive = ResolveDrive(CacheDirectory);
+        var drive = ResolveDrive(path);
         var minimumFreeSpace = ResolveMinimumFreeSpace(drive);
         if (drive.AvailableFreeSpace <= minimumFreeSpace + Math.Max(0, pendingBytes))
             throw new IOException(
