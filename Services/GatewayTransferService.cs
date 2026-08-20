@@ -341,6 +341,8 @@ public sealed class GatewayTransferService(
             }
             var current = File.Exists(partial) ? new FileInfo(partial).Length : 0;
             if (current != offset) return new GatewayUploadResult(false, current, false, "Der Source-Checkpoint stimmt nicht mit der Primary überein.");
+            // Controlled abort before the cache volume is filled to zero (this path has no other disk bound).
+            archiveService.EnsureCacheFreeSpace(0);
             await using (var output = new FileStream(partial, FileMode.Append, FileAccess.Write, FileShare.Read, 4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
                 await body.CopyToAsync(output, 4 * 1024 * 1024, cancellationToken);
@@ -421,6 +423,7 @@ public sealed class GatewayTransferService(
             if (currentOffset != offset)
                 return new GatewayUploadResult(false, currentOffset, false, "Der Upload-Checkpoint stimmt nicht mit der Secondary überein.");
 
+            archiveService.EnsureCacheFreeSpace(0);
             await using (var output = new FileStream(partialPath, FileMode.Append, FileAccess.Write, FileShare.None))
             {
                 await body.CopyToAsync(output, cancellationToken);

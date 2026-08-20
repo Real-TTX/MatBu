@@ -373,6 +373,21 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         return fullCandidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Throw a controlled IOException if the transfer-cache drive is at/below the MatBu free-space reserve.
+    /// Used by the primary receive paths, which otherwise have no disk bound, so the volume is never filled
+    /// to zero: a resumable abort + retry instead of a raw ENOSPC failure.
+    /// </summary>
+    public void EnsureCacheFreeSpace(long pendingBytes)
+    {
+        var drive = ResolveDrive(CacheDirectory);
+        var minimumFreeSpace = ResolveMinimumFreeSpace(drive);
+        if (drive.AvailableFreeSpace <= minimumFreeSpace + Math.Max(0, pendingBytes))
+            throw new IOException(
+                $"Transfer kontrolliert abgebrochen: Auf '{drive.Name}' sind nur noch {FormatBytes(drive.AvailableFreeSpace)} frei. " +
+                $"Die MatBu-Sicherheitsreserve von {FormatBytes(minimumFreeSpace)} wird nicht unterschritten.");
+    }
+
     private static DriveInfo ResolveDrive(string path)
     {
         var root = Path.GetPathRoot(Path.GetFullPath(path));
