@@ -152,23 +152,31 @@ Auf den Primary-Empfangspfaden verhindert ein Free-Space-Guard, dass der Cache-D
 
 Bei einem **LocalFolder-Ziel auf der Primary** schreibt der Empfang die eintreffenden Chunks **direkt in die Zieldatei**, ohne eine zweite vollständige Kopie im Transfer-Cache zu halten. Der Primary-Footprint entspricht damit 1× der Archivgröße (nur die Zieldatei) statt vormals ~2×; die Integrität wird durch erneutes Lesen und SHA-256-Prüfung der fertigen Zieldatei vor dem atomaren Umbenennen sichergestellt.
 
-Bei einem **SMB-Ziel auf der Primary** wird das Archiv jetzt ebenfalls **direkt auf die Freigabe gestreamt** — offset-adressiert über eine reine .NET-SMB-Implementierung (SMBLibrary), ohne lokale Zwischenkopie. Der Wiederaufnahme-Offset ist die Remote-Dateigröße; vor dem atomaren Umbenennen wird die fertige Remote-Datei zur SHA-256-Prüfung noch einmal gelesen. Damit braucht auch ein SMB-Backup keinen lokalen Cache-Platz mehr. Über `MATBU_SMB_STREAMING=0` lässt sich für SMB der bisherige (smbclient-basierte, lokal zwischenlagernde) Pfad erzwingen.
+Bei einem **SMB-Ziel auf der Primary** wird das Archiv jetzt ebenfalls **direkt auf die Freigabe gestreamt** — offset-adressiert über eine reine .NET-SMB-Implementierung (SMBLibrary), ohne lokale Zwischenkopie. Der Wiederaufnahme-Offset ist die Remote-Dateigröße; vor dem atomaren Umbenennen wird die fertige Remote-Datei zur SHA-256-Prüfung noch einmal gelesen. Damit braucht auch ein SMB-Backup keinen lokalen Cache-Platz mehr. Das SMB-Streaming lässt sich unter **Einstellungen → Transfer & Speicher** abschalten, um für SMB-Ziele den bisherigen (smbclient-basierten, lokal zwischenlagernden) Pfad zu erzwingen.
 
 Große VM-Archive laufen so auf LocalFolder- **und** SMB-Zielen auch dann durch, wenn der Transfer-Cache-Datenträger kleiner als das Archiv ist.
 
-Relevante Umgebungsvariablen:
+### Transfer- & Speicher-Einstellungen (UI)
 
-| Variable | Standard | Wirkung |
+Die Feineinstellungen für Transfer, Backpressure und Speicherplatz-Schutz werden im UI unter **Einstellungen → Transfer & Speicher** (Admin) gepflegt und im Datenvolumen (`/data/transfer-settings.json`) gespeichert — dieselben Werte werden von der Web- **und** der Worker-Instanz gelesen. Die früheren `MATBU_*`-Umgebungsvariablen dienen nur noch als **Startwert**, falls noch keine UI-Werte gespeichert wurden.
+
+| Einstellung | Standard | Wirkung |
 | --- | --- | --- |
-| `MATBU_TRANSFER_BACKLOG_HIGH_MIB` | 512 | Rückstand, ab dem der Archiv-Build pausiert wird |
-| `MATBU_TRANSFER_BACKLOG_LOW_MIB` | 128 | Rückstand, bis zu dem gedrained wird, bevor der Build fortsetzt |
-| `MATBU_TRANSFER_SPARSE_CACHE` | an | `0` deaktiviert das Hole-Punching des Transfer-Caches |
-| `MATBU_SMB_STREAMING` | an | `0` erzwingt für SMB-Ziele den alten, lokal zwischenlagernden smbclient-Pfad statt des Direkt-Streams |
-| `MATBU_MIN_FREE_SPACE_GIB` | 1/20 der Platte (512 MiB–5 GiB) | Sicherheitsreserve für Free-Space-Guard und Archiv-Build |
-| `MATBU_TRANSFER_CACHE_RETENTION_HOURS` | 168 (7 Tage) | Aufbewahrung verwaister Transfer-Cache-Dateien |
-| `MATBU_SECONDARY_COMMAND_IDLE_TIMEOUT_SECONDS` | 120 | Idle-Timeout eines Secondary-Kommandos ohne Fortschritt |
-| `MATBU_SECONDARY_HEARTBEAT_SECONDS` | 10 | Keepalive-Intervall während langer Build-/Schreibphasen |
-| `MATBU_SECONDARY_BUILD_STALL_SECONDS` | 1800 | Obergrenze ohne beobachtbaren Fortschritt, bevor der Watchdog greift |
+| Backpressure-Stopp (MiB) | 512 | Rückstand, ab dem der Archiv-Build pausiert wird |
+| Backpressure-Weiter (MiB) | 128 | Rückstand, bis zu dem gedrained wird, bevor der Build fortsetzt |
+| Sparse-Cache | an | aus deaktiviert das Hole-Punching des Transfer-Caches |
+| SMB-Streaming | an | aus erzwingt für SMB-Ziele den alten, lokal zwischenlagernden smbclient-Pfad statt des Direkt-Streams |
+| Mindest-Reserve (GiB) | 0 = automatisch (1/20 der Platte, 512 MiB–5 GiB) | Sicherheitsreserve für Free-Space-Guard und Archiv-Build |
+| Cache-Aufbewahrung (Std.) | 168 (7 Tage) | Aufbewahrung verwaister Transfer-Cache-Dateien |
+| Idle-Timeout (Sek.) | 120 | Idle-Timeout eines Secondary-Kommandos ohne Fortschritt |
+| Heartbeat-Intervall (Sek.) | 10 | Keepalive-Intervall während langer Build-/Schreibphasen |
+| Build-Stall-Fenster (Sek.) | 1800 | Obergrenze ohne beobachtbaren Fortschritt, bevor der Watchdog greift |
+
+Die zugehörigen `MATBU_*`-Variablen (`MATBU_TRANSFER_BACKLOG_HIGH_MIB`, `MATBU_TRANSFER_BACKLOG_LOW_MIB`, `MATBU_TRANSFER_SPARSE_CACHE`, `MATBU_SMB_STREAMING`, `MATBU_MIN_FREE_SPACE_GIB`, `MATBU_TRANSFER_CACHE_RETENTION_HOURS`, `MATBU_SECONDARY_COMMAND_IDLE_TIMEOUT_SECONDS`, `MATBU_SECONDARY_HEARTBEAT_SECONDS`, `MATBU_SECONDARY_BUILD_STALL_SECONDS`) werden weiterhin als Startwerte akzeptiert, sind für den Betrieb aber nicht mehr erforderlich.
+
+### Allgemeine Einstellungen (UI)
+
+Die Zeitzone für den Backup-Zeitplan wird unter **Einstellungen → Allgemein** (Admin) gewählt und im Datenvolumen (`/data/general-settings.json`) gespeichert. Tägliche/wöchentliche Zeitpläne werden in dieser Zeitzone interpretiert. Die Variable `MATBU_TIME_ZONE` dient nur noch als Startwert.
 
 ## Monitoring-API
 

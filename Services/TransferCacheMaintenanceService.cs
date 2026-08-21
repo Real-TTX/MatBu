@@ -4,7 +4,8 @@ public sealed record TransferCacheCleanupResult(int DeletedFiles, long Reclaimed
 
 public sealed class TransferCacheMaintenanceService(
     ArchiveService archiveService,
-    ILogger<TransferCacheMaintenanceService> logger) : BackgroundService
+    ILogger<TransferCacheMaintenanceService> logger,
+    TransferSettingsStore? transferSettings = null) : BackgroundService
 {
     private static readonly TimeSpan Interval = TimeSpan.FromHours(6);
 
@@ -75,11 +76,6 @@ public sealed class TransferCacheMaintenanceService(
         return new TransferCacheCleanupResult(deleted, reclaimed);
     }
 
-    private static TimeSpan ResolveRetention()
-    {
-        var configured = Environment.GetEnvironmentVariable("MATBU_TRANSFER_CACHE_RETENTION_HOURS");
-        return double.TryParse(configured, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hours) && hours > 0
-            ? TimeSpan.FromHours(Math.Max(1, hours))
-            : TimeSpan.FromDays(7);
-    }
+    private TimeSpan ResolveRetention() =>
+        TimeSpan.FromHours((transferSettings?.Read() ?? TransferSettings.FromEnvironmentDefaults()).CacheRetentionHours);
 }

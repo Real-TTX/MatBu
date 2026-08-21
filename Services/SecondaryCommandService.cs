@@ -18,7 +18,7 @@ public sealed record SecondaryCommandProgress(
     long EstimatedSourceBytes = 0,
     long EstimatedStoredBytes = 0);
 
-public sealed class SecondaryCommandService(PersistentStore store)
+public sealed class SecondaryCommandService(PersistentStore store, TransferSettingsStore? transferSettings = null)
 {
     public long Queue(long instanceId, SecondaryCommandKind kind, string transferId, object payload)
     {
@@ -96,7 +96,12 @@ public sealed class SecondaryCommandService(PersistentStore store)
     public SecondaryCommand? Get(long id) => store.Read().SecondaryCommands.FirstOrDefault(x => x.Id == id);
 
     public Task<SecondaryCommand> WaitForCompletionAsync(long commandId, CancellationToken cancellationToken) =>
-        WaitForCompletionAsync(commandId, ResolveInactivityTimeout(), cancellationToken);
+        WaitForCompletionAsync(commandId, CurrentInactivityTimeout(), cancellationToken);
+
+    /// <summary>Idle timeout from the UI settings (Settings → Transfer), falling back to the env/default.</summary>
+    private TimeSpan CurrentInactivityTimeout() => transferSettings is { } s
+        ? TimeSpan.FromSeconds(s.Read().SecondaryIdleTimeoutSeconds)
+        : ResolveInactivityTimeout();
 
     public async Task<SecondaryCommand> WaitForCompletionAsync(long commandId, TimeSpan inactivityTimeout, CancellationToken cancellationToken)
     {

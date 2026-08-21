@@ -21,21 +21,17 @@ public sealed class SecondaryConnectionWorker(
     ObjectConnectivityTester tester,
     SourceBrowserService sourceBrowser,
     ProxmoxNativeBackupService proxmoxNative,
-    ILogger<SecondaryConnectionWorker> logger) : BackgroundService
+    ILogger<SecondaryConnectionWorker> logger,
+    TransferSettingsStore? transferSettings = null) : BackgroundService
 {
     private const int ChunkSize = 4 * 1024 * 1024;
-    // Keepalive so the primary's idle watchdog (default 120s) does not kill a long-but-live build/transfer.
-    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(ResolveInt("MATBU_SECONDARY_HEARTBEAT_SECONDS", 10, 2, 60));
-    // Upper bound on how long the build may make no observable forward progress before we let the watchdog
-    // trip anyway (guards against masking a genuinely frozen source read).
-    private static readonly TimeSpan MaxSilentBuildWindow = TimeSpan.FromSeconds(ResolveInt("MATBU_SECONDARY_BUILD_STALL_SECONDS", 1800, 120, 21600));
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
 
-    private static int ResolveInt(string variable, int fallback, int min, int max)
-    {
-        var configured = Environment.GetEnvironmentVariable(variable);
-        return int.TryParse(configured, out var value) ? Math.Clamp(value, min, max) : fallback;
-    }
+    // Keepalive so the primary's idle watchdog does not kill a long-but-live build/transfer (Settings → Transfer).
+    private TimeSpan HeartbeatInterval => TimeSpan.FromSeconds((transferSettings?.Read() ?? TransferSettings.FromEnvironmentDefaults()).SecondaryHeartbeatSeconds);
+    // Upper bound on how long the build may make no observable forward progress before we let the watchdog
+    // trip anyway (guards against masking a genuinely frozen source read).
+    private TimeSpan MaxSilentBuildWindow => TimeSpan.FromSeconds((transferSettings?.Read() ?? TransferSettings.FromEnvironmentDefaults()).SecondaryBuildStallSeconds);
     private readonly string _primaryEndpoint = (Environment.GetEnvironmentVariable("MATBU_PRIMARY_ENDPOINT") ?? "").TrimEnd('/');
     private readonly string? _token = Environment.GetEnvironmentVariable("MATBU_INSTANCE_TOKEN");
     // Per-command cancellation, so a 409 stop directive on the /progress back-channel can abort the in-flight command.

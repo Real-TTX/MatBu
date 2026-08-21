@@ -11,7 +11,7 @@ namespace MatBu.Services;
 public sealed record ArchiveProgress(long SourceBytes, long StoredBytes, long EstimatedSourceBytes, long EstimatedStoredBytes, long SpeedBytesPerSecond);
 public sealed record ArchiveCreationResult(long SourceBytes, long StoredBytes, string Sha256 = "");
 
-public sealed class ArchiveService(IHostEnvironment environment, SmbClientService smbClient, ProxmoxService proxmox, ILogger<ArchiveService> logger)
+public sealed class ArchiveService(IHostEnvironment environment, SmbClientService smbClient, ProxmoxService proxmox, ILogger<ArchiveService> logger, TransferSettingsStore? transferSettings = null)
 {
     private const long MiB = 1024L * 1024L;
     private const long GiB = 1024L * MiB;
@@ -402,10 +402,10 @@ public sealed class ArchiveService(IHostEnvironment environment, SmbClientServic
         return new DriveInfo(root);
     }
 
-    private static long ResolveMinimumFreeSpace(DriveInfo drive)
+    private long ResolveMinimumFreeSpace(DriveInfo drive)
     {
-        var configured = Environment.GetEnvironmentVariable("MATBU_MIN_FREE_SPACE_GIB");
-        if (double.TryParse(configured, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gib) && gib > 0)
+        var gib = (transferSettings?.Read() ?? TransferSettings.FromEnvironmentDefaults()).MinFreeSpaceGiB;
+        if (gib > 0)
             return Math.Max(512L * MiB, (long)Math.Ceiling(gib * GiB));
         return Math.Clamp(drive.TotalSize / 20, 512L * MiB, 5L * GiB);
     }

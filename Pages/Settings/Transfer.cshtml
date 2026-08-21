@@ -1,0 +1,63 @@
+@page
+@model MatBu.Pages.Settings.TransferModel
+@{ ViewData["Title"] = "Transfer & Speicher"; }
+
+<div class="page-heading">
+    <div><h1>Transfer &amp; Speicher</h1></div>
+    <div class="button-row"><a class="button" asp-page="/Settings/Notifications">Benachrichtigungen</a></div>
+</div>
+
+<p class="settings-help">
+    Feineinstellungen für Datentransfer, Backpressure und Speicherplatz-Schutz. Diese Werte werden im Datenvolumen
+    gespeichert und von der Web- <em>und</em> der Worker-Instanz gelesen — dieselben Werte, die früher über
+    <code>MATBU_*</code>-Umgebungsvariablen gesetzt wurden. Umgebungsvariablen dienen nur noch als Startwert.
+</p>
+
+@if (Model.Message is not null)
+{
+    <div class="@(Model.MessageIsError ? "login-error" : "notice-success")">@Model.Message</div>
+}
+
+<form method="post" class="notification-form">
+    <div class="settings-grid">
+        <section class="panel form settings-card">
+            <div class="panel-heading"><div><span class="route-label">Sekundär</span><h2>Cache &amp; Backpressure</h2></div><label class="toggle-label"><input asp-for="Input.SparseCacheEnabled" /> Sparse-Cache</label></div>
+            <p class="settings-help">Die Sekundär-Instanz gibt bereits übertragene Cache-Bereiche per Hole-Punch frei und drosselt den Archiv-Aufbau, damit der Cache nicht schneller wächst als übertragen wird.</p>
+            <div class="form-grid">
+                <div class="field"><label asp-for="Input.BacklogHighMiB">Backpressure-Stopp (MiB)</label><input asp-for="Input.BacklogHighMiB" type="number" min="16" step="16" /></div>
+                <div class="field"><label asp-for="Input.BacklogLowMiB">Backpressure-Weiter (MiB)</label><input asp-for="Input.BacklogLowMiB" type="number" min="8" step="8" /></div>
+            </div>
+            <p class="settings-help">Erreicht der noch nicht übertragene Rückstau den Stopp-Wert, pausiert das Lesen; unter dem Weiter-Wert läuft es weiter.</p>
+        </section>
+
+        <section class="panel form settings-card">
+            <div class="panel-heading"><div><span class="route-label">Primär</span><h2>Speicherplatz-Schutz</h2></div></div>
+            <div class="form-grid">
+                <div class="field"><label asp-for="Input.MinFreeSpaceGiB">Mindest-Reserve (GiB)</label><input asp-for="Input.MinFreeSpaceGiB" type="number" min="0" step="0.5" /></div>
+                <div class="field"><label asp-for="Input.CacheRetentionHours">Cache-Aufbewahrung (Std.)</label><input asp-for="Input.CacheRetentionHours" type="number" min="1" max="8760" /></div>
+            </div>
+            <p class="settings-help"><strong>0 = automatisch</strong> (1/20 des Datenträgers, begrenzt auf 512 MiB…5 GiB). Transfers brechen kontrolliert ab, bevor der Datenträger vollläuft. Alte Transfer-Cache-Dateien werden nach der Aufbewahrungszeit gelöscht.</p>
+        </section>
+
+        <section class="panel form settings-card">
+            <div class="panel-heading"><div><span class="route-label">Sekundär</span><h2>Verbindung &amp; Watchdog</h2></div></div>
+            <div class="form-grid">
+                <div class="field"><label asp-for="Input.SecondaryIdleTimeoutSeconds">Idle-Timeout (Sek.)</label><input asp-for="Input.SecondaryIdleTimeoutSeconds" type="number" min="5" max="3600" /></div>
+                <div class="field"><label asp-for="Input.SecondaryHeartbeatSeconds">Heartbeat-Intervall (Sek.)</label><input asp-for="Input.SecondaryHeartbeatSeconds" type="number" min="2" max="60" /></div>
+                <div class="field"><label asp-for="Input.SecondaryBuildStallSeconds">Build-Stall-Fenster (Sek.)</label><input asp-for="Input.SecondaryBuildStallSeconds" type="number" min="120" max="21600" /></div>
+            </div>
+            <p class="settings-help">Der Idle-Timeout bricht ein Kommando ab, das so lange keinen Fortschritt meldet. Heartbeats halten lange, aber lebende Aufbau-/Transferphasen am Leben; das Build-Stall-Fenster begrenzt, wie lange ein Aufbau ohne sichtbaren Fortschritt verlängert wird.</p>
+        </section>
+
+        <section class="panel form settings-card">
+            <div class="panel-heading"><div><span class="route-label">Ziel</span><h2>SMB-Streaming</h2></div><label class="toggle-label"><input asp-for="Input.SmbStreamingEnabled" /> Aktiv</label></div>
+            <p class="settings-help">Schreibt große Archive per SMBLibrary direkt (offset-adressiert) auf die SMB-Freigabe, ohne sie zuvor vollständig lokal zwischenzuspeichern. Deaktivieren fällt auf den alten smbclient-Cache-Pfad zurück.</p>
+        </section>
+    </div>
+
+    <div class="form-actions notification-save">
+        <button class="button primary" type="submit" asp-page-handler="Save">Speichern</button>
+        <button class="button" type="submit" asp-page-handler="Reset">Standardwerte</button>
+        <a class="button" asp-page="/Index">Zurück</a>
+    </div>
+</form>

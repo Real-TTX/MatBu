@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace MatBu.Pages.Tasks;
 
-public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser, SecondaryCommandService commands) : AppPageModel(store)
+public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser, SecondaryCommandService commands, GeneralSettingsStore generalSettings) : AppPageModel(store)
 {
     private static readonly int[] ValidChunkSizesMiB = [4, 8, 16, 32];
 
@@ -108,7 +108,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
                 Input.Id = Store.NextId(current.Tasks.Select(x => x.Id));
                 Input.CreateDate = Input.UpdateDate = now;
                 Input.CreateUserId = Input.UpdateUserId = CurrentUser!.Id;
-                Input.NextRunDate = Input.Enabled ? BackupSchedule.GetNextOccurrenceUtc(Input.Schedule, now) : null;
+                Input.NextRunDate = Input.Enabled ? BackupSchedule.GetNextOccurrenceUtc(Input.Schedule, now, generalSettings.ResolveTimeZone()) : null;
                 current.Tasks.Add(Input);
                 AddLabelAssignments(current, Input.Id, SelectedLabelIds, Input.CreateDate);
                 return;
@@ -132,7 +132,7 @@ public class EditModel(PersistentStore store, SourceBrowserService sourceBrowser
             item.PreBackupCommand = Input.PreBackupCommand;
             item.PostBackupCommand = Input.PostBackupCommand;
             item.ConsistencyTimeoutSeconds = Input.ConsistencyTimeoutSeconds;
-            item.NextRunDate = Input.Enabled ? BackupSchedule.GetNextOccurrenceUtc(Input.Schedule, now) : null;
+            item.NextRunDate = Input.Enabled ? BackupSchedule.GetNextOccurrenceUtc(Input.Schedule, now, generalSettings.ResolveTimeZone()) : null;
             item.UpdateDate = now;
             item.UpdateUserId = CurrentUser!.Id;
             current.BackupTaskLabels.RemoveAll(assignment => assignment.BackupTaskId == item.Id);

@@ -10,7 +10,7 @@ using SmbFileAttributes = SMBLibrary.FileAttributes;
 
 namespace MatBu.Services;
 
-public sealed class SmbClientService(ILogger<SmbClientService> logger)
+public sealed class SmbClientService(ILogger<SmbClientService> logger, TransferSettingsStore? transferSettings = null)
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan TransferTimeout = TimeSpan.FromHours(24);
@@ -587,8 +587,8 @@ public sealed class SmbClientService(ILogger<SmbClientService> logger)
     // offset-addressed, instead of being staged whole locally for smbclient `reput`. Each call opens its own
     // short-lived SMB2 session (leak-proof, thread-safe); the resume offset is the durable remote size.
 
-    /// <summary>Whether the SMBLibrary direct-to-target streaming write is enabled (env MATBU_SMB_STREAMING).</summary>
-    public static bool IsStreamingEnabled { get; } = Environment.GetEnvironmentVariable("MATBU_SMB_STREAMING") != "0";
+    /// <summary>Whether the SMBLibrary direct-to-target streaming write is enabled (Settings → Transfer).</summary>
+    public bool IsStreamingEnabled => (transferSettings?.Read() ?? TransferSettings.FromEnvironmentDefaults()).SmbStreamingEnabled;
 
     public Task<long> GetRemoteFileSizeAsync(string location, string remoteName, (string Username, string Password)? credential, CancellationToken cancellationToken) =>
         Task.Run(() => ExecuteSmb(location, credential, (store, loc) =>

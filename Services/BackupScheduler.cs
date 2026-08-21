@@ -2,7 +2,7 @@ using MatBu.Data;
 
 namespace MatBu.Services;
 
-public sealed class BackupScheduler(PersistentStore store, ILogger<BackupScheduler> logger) : BackgroundService
+public sealed class BackupScheduler(PersistentStore store, ILogger<BackupScheduler> logger, GeneralSettingsStore generalSettings) : BackgroundService
 {
     public const string RetryWaitingState = "Wartet auf Wiederholung";
 
@@ -14,7 +14,7 @@ public sealed class BackupScheduler(PersistentStore store, ILogger<BackupSchedul
             return;
         }
 
-        logger.LogInformation("MatBu scheduler started with time zone {TimeZone}", BackupSchedule.ResolveTimeZone().Id);
+        logger.LogInformation("MatBu scheduler started with time zone {TimeZone}", generalSettings.ResolveTimeZone().Id);
         InitializePersistentSchedules();
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -35,7 +35,7 @@ public sealed class BackupScheduler(PersistentStore store, ILogger<BackupSchedul
                 task.RetryDelayMinutes = Math.Clamp(task.RetryDelayMinutes, 1, 1440);
                 if (!task.Enabled) { task.NextRunDate = null; continue; }
                 if (task.NextRunDate is null)
-                    task.NextRunDate = BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now);
+                    task.NextRunDate = BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now, generalSettings.ResolveTimeZone());
             }
         });
     }
@@ -57,7 +57,7 @@ public sealed class BackupScheduler(PersistentStore store, ILogger<BackupSchedul
             {
                 if (task.State == RetryWaitingState)
                 {
-                    task.NextRunDate = BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now);
+                    task.NextRunDate = BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now, generalSettings.ResolveTimeZone());
                     continue;
                 }
 
@@ -67,7 +67,7 @@ public sealed class BackupScheduler(PersistentStore store, ILogger<BackupSchedul
                     logger.LogInformation("Task {TaskId} ({TaskName}) scheduled for execution", task.Id, task.Name);
                 }
 
-                task.NextRunDate = BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now);
+                task.NextRunDate = BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now, generalSettings.ResolveTimeZone());
                 task.UpdateDate = now;
             }
         });

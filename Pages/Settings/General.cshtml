@@ -1,0 +1,34 @@
+@page
+@model MatBu.Pages.Settings.GeneralModel
+@{ ViewData["Title"] = "Allgemein"; }
+
+<div class="page-heading">
+    <div><h1>Allgemein</h1></div>
+    <div class="button-row"><a class="button" asp-page="/Settings/Transfer">Transfer &amp; Speicher</a></div>
+</div>
+
+<p class="settings-help">
+    Globale Einstellungen der Anwendung. Werte werden im Datenvolumen (<code>/data/general-settings.json</code>)
+    gespeichert und von der Web- <em>und</em> der Worker-Instanz gelesen. Die Variable <code>MATBU_TIME_ZONE</code>
+    dient nur noch als Startwert.
+</p>
+
+@if (Model.Message is not null)
+{
+    <div class="@(Model.MessageIsError ? "login-error" : "notice-success")">@Model.Message</div>
+}
+
+<form method="post" class="notification-form">
+    <section class="panel form settings-card">
+        <div class="panel-heading"><div><span class="route-label">Zeitplan</span><h2>Zeitzone</h2></div></div>
+        <div class="field">
+            <label asp-for="Input.TimeZoneId">Zeitzone für den Backup-Zeitplan</label>
+            <select asp-for="Input.TimeZoneId" asp-items="Model.TimeZones"></select>
+        </div>
+        <p class="settings-help">Aktuell aktiv: <strong>@Model.CurrentZoneLabel</strong> · lokale Zeit jetzt: <strong>@Model.CurrentLocalTime</strong>. Tägliche/wöchentliche Zeitpläne werden in dieser Zeitzone interpretiert.</p>
+        <div class="form-actions notification-save">
+            <button class="button primary" type="submit" asp-page-handler="Save">Speichern</button>
+            <a class="button" asp-page="/Index">Zurück</a>
+        </div>
+    </section>
+</form>

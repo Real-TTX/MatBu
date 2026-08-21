@@ -32,6 +32,8 @@
         <symbol id="icon-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></symbol>
         <symbol id="icon-logout" viewBox="0 0 24 24"><path d="M10 4H5v16h5m4-4 4-4-4-4m4 4H9" /></symbol>
         <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></symbol>
+        <symbol id="icon-sliders" viewBox="0 0 24 24"><path d="M4 6h10m4 0h2M4 12h6m4 0h6M4 18h10m4 0h2M14 4v4M10 10v4M14 16v4" /></symbol>
+        <symbol id="icon-cog" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M2 12h3m14 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" /></symbol>
     </svg>
     <div class="app-shell">
         <aside class="sidebar">
@@ -51,11 +53,13 @@
                 </div>
                 <div class="sidebar-tools" aria-label="Benutzer und Darstellung">
                     <button class="sidebar-tool theme-toggle" type="button" data-theme-toggle aria-label="Darstellung: System" title="Darstellung: System">◐</button>
+                    <a class="sidebar-tool" asp-page="/Settings/General" aria-label="Allgemein" title="Allgemein"><svg class="ui-icon"><use href="#icon-cog"></use></svg></a>
+                    <a class="sidebar-tool" asp-page="/Settings/Transfer" aria-label="Transfer &amp; Speicher" title="Transfer &amp; Speicher"><svg class="ui-icon"><use href="#icon-sliders"></use></svg></a>
                     <a class="sidebar-tool" asp-page="/Settings/Notifications" aria-label="Benachrichtigungen" title="Benachrichtigungen"><svg class="ui-icon"><use href="#icon-bell"></use></svg></a>
                     <form method="post" action="/Logout" class="sidebar-logout-form"><button class="sidebar-tool danger" type="submit" aria-label="Abmelden" title="Abmelden"><svg class="ui-icon"><use href="#icon-logout"></use></svg></button></form>
                 </div>
                 <div class="connection"><i></i><span>System online</span></div>
-                <small>v0.5.0 · local</small>
+                <small>v0.6.0 · local</small>
             </div>
         </aside>
         <main class="main">

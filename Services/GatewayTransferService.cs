@@ -17,23 +17,17 @@ public sealed class GatewayTransferService(
     DockerConsistencyService dockerConsistency,
     SmbClientService smbClient,
     PersistentStore store,
-    ILogger<GatewayTransferService> logger)
+    ILogger<GatewayTransferService> logger,
+    TransferSettingsStore? transferSettings = null)
 {
     private const long MiB = 1024L * 1024L;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _transferLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, PipelineRateState> _pipelineRates = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, TransferBackpressureGate> _backpressure = new(StringComparer.OrdinalIgnoreCase);
 
-    private static readonly long BacklogHighWatermark = ResolveWatermark("MATBU_TRANSFER_BACKLOG_HIGH_MIB", 512) * MiB;
-    private static readonly long BacklogLowWatermark = ResolveWatermark("MATBU_TRANSFER_BACKLOG_LOW_MIB", 128) * MiB;
-    private static readonly bool SparseCacheEnabled = Environment.GetEnvironmentVariable("MATBU_TRANSFER_SPARSE_CACHE") != "0";
     private const long SparseReleaseThreshold = 32L * MiB;
 
-    private static long ResolveWatermark(string variable, long defaultMiB)
-    {
-        var configured = Environment.GetEnvironmentVariable(variable);
-        return long.TryParse(configured, out var value) && value > 0 ? value : defaultMiB;
-    }
+    private TransferSettings Settings => transferSettings?.Read() ?? TransferSettings.FromEnvironmentDefaults();
 
     /// <summary>
     /// Deallocate the physical disk blocks of the source cache region the consumer has already uploaded, so
@@ -42,7 +36,7 @@ public sealed class GatewayTransferService(
     /// </summary>
     public long ReleaseConsumedSpace(string path, long consumedOffset, long alreadyReleased)
     {
-        if (!SparseCacheEnabled || consumedOffset - alreadyReleased < SparseReleaseThreshold) return alreadyReleased;
+        if (!Settings.SparseCacheEnabled || consumedOffset - alreadyReleased < SparseReleaseThreshold) return alreadyReleased;
         var (offset, length) = SparseFile.AlignedRange(alreadyReleased, consumedOffset);
         if (length <= 0) return alreadyReleased;
         if (!SparseFile.TryPunchHole(path, offset, length)) return alreadyReleased;
@@ -51,7 +45,11 @@ public sealed class GatewayTransferService(
     }
 
     private TransferBackpressureGate Gate(string transferId) =>
-        _backpressure.GetOrAdd(transferId, _ => new TransferBackpressureGate(BacklogHighWatermark, BacklogLowWatermark));
+        _backpressure.GetOrAdd(transferId, _ =>
+        {
+            var s = Settings;
+            return new TransferBackpressureGate(s.BacklogHighMiB * MiB, s.BacklogLowMiB * MiB);
+        });
 
     /// <summary>
     /// Report how many bytes the transfer consumer (upload/target sync) has drained from the source
@@ -88,7 +86,7 @@ public sealed class GatewayTransferService(
             {
                 // A previously streamed archive may have had consumed regions punched out, so it is no longer
                 // safe to reuse as-is; rebuild it. Without sparse cache the file is intact and can be reused.
-                if (!SparseCacheEnabled) return archivePath;
+                if (!Settings.SparseCacheEnabled) return archivePath;
                 File.Delete(archivePath);
             }
 
@@ -311,7 +309,7 @@ public sealed class GatewayTransferService(
                 if (File.Exists(directTarget.Destination)) return new FileInfo(directTarget.Destination).Length;
                 return 0;
             }
-            if (directTarget.Object.Kind == ObjectKind.Smb && SmbClientService.IsStreamingEnabled)
+            if (directTarget.Object.Kind == ObjectKind.Smb && smbClient.IsStreamingEnabled)
             {
                 // Durable remote size is the resume cursor for the SMB direct route.
                 var partialSize = await smbClient.GetRemoteFileSizeAsync(directTarget.Object.Location, directTarget.FileName + ".partial", directTarget.Credential, cancellationToken);
@@ -361,11 +359,11 @@ public sealed class GatewayTransferService(
             var target = jobId > 0 ? ResolveStreamingPrimaryTarget(jobId) : null;
             // Direct-to-target streaming: write chunks straight to the primary target, keeping NO full copy
             // in the transfer cache. LocalFolder writes the file directly; SMB writes offset-addressed via
-            // SMBLibrary (footprint ~0 locally). SMB can be forced back to the cache path with
-            // MATBU_SMB_STREAMING=0.
+            // SMBLibrary (footprint ~0 locally). SMB can be forced back to the cache path by disabling
+            // SMB-Streaming under Settings → Transfer.
             if (target?.Object.Kind == ObjectKind.LocalFolder)
                 return await ReceiveSourceChunkToLocalTargetAsync(transferId, offset, final, jobId, totalBytes, expectedSha256, target, body, cancellationToken);
-            if (target?.Object.Kind == ObjectKind.Smb && SmbClientService.IsStreamingEnabled)
+            if (target?.Object.Kind == ObjectKind.Smb && smbClient.IsStreamingEnabled)
                 return await ReceiveSourceChunkToSmbTargetAsync(transferId, offset, final, jobId, totalBytes, expectedSha256, target, body, cancellationToken);
 
             var partial = Path.Combine(archiveService.CacheDirectory, $"gateway-source-{transferId}.tar.partial");
@@ -767,7 +765,7 @@ public sealed class GatewayTransferService(
                 if (File.Exists(target.Destination)) File.Delete(target.Destination);
                 return;
             }
-            if (SmbClientService.IsStreamingEnabled)
+            if (smbClient.IsStreamingEnabled)
             {
                 // Direct route uses SMBLibrary end to end (no smbclient CLI): drop both the .partial and a
                 // finalized destination from a prior failed attempt so a rebuilt source cannot be

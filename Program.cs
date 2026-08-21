@@ -66,6 +66,8 @@ builder.Services.AddSingleton<DockerConsistencyService>();
 builder.Services.AddHostedService<ConsistencyRecoveryWorker>();
 builder.Services.AddHostedService<TransferCacheMaintenanceService>();
 builder.Services.AddSingleton<NotificationSettingsStore>();
+builder.Services.AddSingleton<TransferSettingsStore>();
+builder.Services.AddSingleton<GeneralSettingsStore>();
 builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddHostedService<NotificationDispatcher>();
 builder.Services.AddHostedService<SecondaryConnectionWorker>();
@@ -384,7 +386,7 @@ app.MapPost("/api/tasks/{id:long}/run", (long id, PersistentStore store) =>
     });
     return Results.Ok(new { message = "Task wurde zur sofortigen Ausführung eingeplant." });
 });
-app.MapPost("/api/tasks", (BackupTask task, HttpContext context, PersistentStore store) =>
+app.MapPost("/api/tasks", (BackupTask task, HttpContext context, PersistentStore store, GeneralSettingsStore generalSettings) =>
 {
     var isAdmin = CurrentUser(context, store)?.Role == UserRole.Admin;
     if (task.ConsistencyMode != BackupConsistencyMode.None && !isAdmin) return Results.Forbid();
@@ -413,7 +415,7 @@ app.MapPost("/api/tasks", (BackupTask task, HttpContext context, PersistentStore
     task.Id = store.NextId(data.Tasks.Select(x => x.Id));
     task.CreateDate = DateTimeOffset.UtcNow;
     task.UpdateDate = task.CreateDate;
-    task.NextRunDate = task.Enabled ? BackupSchedule.GetNextOccurrenceUtc(task.Schedule, task.CreateDate) : null;
+    task.NextRunDate = task.Enabled ? BackupSchedule.GetNextOccurrenceUtc(task.Schedule, task.CreateDate, generalSettings.ResolveTimeZone()) : null;
     store.Update(current =>
     {
         current.Tasks.Add(task);
@@ -423,7 +425,7 @@ app.MapPost("/api/tasks", (BackupTask task, HttpContext context, PersistentStore
     });
     return Results.Created($"/api/tasks/{task.Id}", task);
 });
-app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, HttpContext context, PersistentStore store) =>
+app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, HttpContext context, PersistentStore store, GeneralSettingsStore generalSettings) =>
 {
     var isAdmin = CurrentUser(context, store)?.Role == UserRole.Admin;
     if (!BackupSchedule.TryParse(task.Schedule, out _))
@@ -461,7 +463,7 @@ app.MapPut("/api/tasks/{id:long}", (long id, BackupTask task, HttpContext contex
     {
         var target = data.Tasks.First(x => x.Id == id);
         var now = DateTimeOffset.UtcNow;
-        target.Name = task.Name; target.SourceId = task.SourceId; target.TargetId = task.TargetId; target.Method = task.Method; target.Compression = task.Method == BackupMethod.Full ? task.Compression : BackupCompression.None; target.SourceSelectionJson = task.SourceSelectionJson; target.ChunkSizeMiB = task.ChunkSizeMiB; target.Schedule = task.Schedule; target.Retention = task.Retention; target.MaxRetryAttempts = task.MaxRetryAttempts; target.RetryDelayMinutes = task.RetryDelayMinutes; target.ConsistencyMode = task.ConsistencyMode; target.ConsistencyContainerNames = task.ConsistencyContainerNames; target.PreBackupCommand = task.PreBackupCommand; target.PostBackupCommand = task.PostBackupCommand; target.ConsistencyTimeoutSeconds = task.ConsistencyTimeoutSeconds; target.Enabled = task.Enabled; target.NextRunDate = task.Enabled ? BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now) : null; target.UpdateDate = now;
+        target.Name = task.Name; target.SourceId = task.SourceId; target.TargetId = task.TargetId; target.Method = task.Method; target.Compression = task.Method == BackupMethod.Full ? task.Compression : BackupCompression.None; target.SourceSelectionJson = task.SourceSelectionJson; target.ChunkSizeMiB = task.ChunkSizeMiB; target.Schedule = task.Schedule; target.Retention = task.Retention; target.MaxRetryAttempts = task.MaxRetryAttempts; target.RetryDelayMinutes = task.RetryDelayMinutes; target.ConsistencyMode = task.ConsistencyMode; target.ConsistencyContainerNames = task.ConsistencyContainerNames; target.PreBackupCommand = task.PreBackupCommand; target.PostBackupCommand = task.PostBackupCommand; target.ConsistencyTimeoutSeconds = task.ConsistencyTimeoutSeconds; target.Enabled = task.Enabled; target.NextRunDate = task.Enabled ? BackupSchedule.GetNextOccurrenceUtc(task.Schedule, now, generalSettings.ResolveTimeZone()) : null; target.UpdateDate = now;
         data.BackupTaskLabels.RemoveAll(item => item.BackupTaskId == id);
         var nextAssignmentId = store.NextId(data.BackupTaskLabels.Select(item => item.Id));
         foreach (var labelId in labelIds)
