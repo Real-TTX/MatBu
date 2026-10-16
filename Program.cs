@@ -2,7 +2,9 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using MatBu.Data;
 using MatBu.Models;
+using MatBu.Platform;
 using MatBu.Services;
+using MatPlatform;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
@@ -72,6 +74,26 @@ builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddHostedService<NotificationDispatcher>();
 builder.Services.AddHostedService<SecondaryConnectionWorker>();
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+builder.Services.AddSingleton<MatBuStatusService>();
+builder.Services.AddSingleton<UserAccountService>();
+
+// The Mat platform contract (MatDesign docs/PLATFORM.md): /api, /api/health, /api/state, /api/configure, /api/actions with MAT_API_KEY,
+// and the optional sign-in through MatIdentity (MATIDENTITY_*). The package MatPlatform (a copy in MatPlatform/) serves the endpoints;
+// MatBuPlatform describes MatBu and supplies the values.
+var platform = builder.AddMatPlatform<MatBuPlatform>(MatBuPlatform.Describe);
+var authentication = builder.Services.AddAuthentication();
+if (platform.IdentityEnabled)
+{
+    // Only a scheme the OpenID Connect handler can sign in with; MatBuIdentityUsers signs the person in with MatBu's own session cookie.
+    // Without MatIdentity no scheme is registered at all, so MatBu behaves exactly as before.
+    authentication.AddCookie(MatBuPlatform.ExternalCookieScheme, options => options.Cookie.Name = "matbu_external");
+}
+authentication.AddMatIdentitySignIn<MatBuIdentityUsers>(platform, options =>
+{
+    options.CookieScheme = MatBuPlatform.ExternalCookieScheme;
+    options.LoginPath = "/Login";
+    options.AccessDeniedPath = "/Login?local=1&ssoError=1";
+});
 
 var app = builder.Build();
 app.UseExceptionHandler();
@@ -80,8 +102,16 @@ if (app.Environment.IsProduction()) app.UseHsts();
 app.UseStaticFiles();
 app.UseRouting();
 app.UseRateLimiter();
+app.UseAuthentication();
 app.Use(async (context, next) =>
 {
+    // The endpoints of the platform contract check X-Api-Key or a MatIdentity token themselves (/api and /api/health are anonymous).
+    if (IsPlatformPath(context.Request.Path))
+    {
+        await next();
+        return;
+    }
+
     if (context.Request.Path.StartsWithSegments("/api") &&
         !context.Request.Path.StartsWithSegments("/api/auth/login") &&
         !context.Request.Path.StartsWithSegments("/api/auth/me") &&
@@ -588,6 +618,11 @@ static AppUser? CurrentUser(HttpContext context, PersistentStore store)
     return session is null ? null : data.Users.FirstOrDefault(item => item.Id == session.UserId);
 }
 
+static bool IsPlatformPath(PathString path) =>
+    path.Equals("/api", StringComparison.OrdinalIgnoreCase) ||
+    path.Equals("/api/", StringComparison.OrdinalIgnoreCase) ||
+    MatPlatformEndpoints.Paths.Any(prefix => path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase));
+
 static bool UsesCredentials(ObjectKind kind) => kind is ObjectKind.Smb or ObjectKind.Proxmox or ObjectKind.ProxmoxBackupServer;
 
 static string? ValidateConsistency(BackupTask task)
@@ -607,7 +642,10 @@ static string? ValidateConsistency(BackupTask task)
 }
 
 app.MapRazorPages();
+app.MapMatPlatform();
 app.Run();
+
+public partial class Program;
 
 public record LoginRequest(string UserName, string Password);
 public sealed record ObjectUpsertRequest(string Name, ObjectKind Kind, ObjectDirection Direction, string Location, string Detail, string? SmbUsername, string? SmbPassword, long InstanceId = 1)
