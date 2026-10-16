@@ -67,7 +67,7 @@ public sealed class TransferBackpressureGateTests
     // watermark stalls forever UNLESS the consumer advances ReportConsumed. This is exactly the invariant
     // that broke when the throttle was wired in but ReportConsumed was not called on the local-stream path.
     [Fact]
-    public void Producer_StallsForever_WhenConsumerNeverReports()
+    public async Task Producer_StallsForever_WhenConsumerNeverReports()
     {
         var gate = new TransferBackpressureGate(highWatermark: 1000, lowWatermark: 200, pollMilliseconds: 5);
         using var cts = new CancellationTokenSource();
@@ -77,15 +77,15 @@ public sealed class TransferBackpressureGateTests
             catch (OperationCanceledException) { }
         });
 
-        Assert.False(producer.Wait(TimeSpan.FromMilliseconds(500)), "producer must stall once backlog exceeds the high watermark and nothing is consumed");
+        Assert.False(await Finishes(producer, TimeSpan.FromMilliseconds(500)), "producer must stall once backlog exceeds the high watermark and nothing is consumed");
         Assert.True(gate.IsPaused);
 
         cts.Cancel();
-        try { producer.Wait(TimeSpan.FromSeconds(2)); } catch { }
+        await Finishes(producer, TimeSpan.FromSeconds(2));
     }
 
     [Fact]
-    public void Producer_IsReleased_WhenConsumerReportsInLockstep()
+    public async Task Producer_IsReleased_WhenConsumerReportsInLockstep()
     {
         var gate = new TransferBackpressureGate(highWatermark: 1000, lowWatermark: 200, pollMilliseconds: 5);
         using var cts = new CancellationTokenSource();
@@ -104,8 +104,12 @@ public sealed class TransferBackpressureGateTests
             }
         });
 
-        Assert.True(producer.Wait(TimeSpan.FromSeconds(5)), "producer must finish once the consumer keeps draining the backlog");
+        Assert.True(await Finishes(producer, TimeSpan.FromSeconds(5)), "producer must finish once the consumer keeps draining the backlog");
         cts.Cancel();
-        try { consumer.Wait(TimeSpan.FromSeconds(2)); } catch { }
+        await Finishes(consumer, TimeSpan.FromSeconds(2));
     }
+
+    /// <summary>True when <paramref name="task"/> ends (in whatever state) within <paramref name="timeout"/>, without blocking the test thread.</summary>
+    private static async Task<bool> Finishes(Task task, TimeSpan timeout) =>
+        await Task.WhenAny(task, Task.Delay(timeout)) == task;
 }
