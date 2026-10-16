@@ -189,6 +189,39 @@ X-MatBu-Token: <monitoring-token>
 
 Der Endpunkt antwortet mit `200 Healthy`, wenn alle Objects erreichbar sind, kein Task aktuell im Fehlerzustand steht und innerhalb der letzten 24 Stunden kein Job fehlgeschlagen ist. Bei Problemen wird `503 Degraded` mit den betroffenen Objects, Tasks und der Anzahl aktueller Jobfehler geliefert. Ein Admin kann das Token mit `POST /api/monitoring/token/regenerate` rotieren. Das Token liegt persistent im Volume unter `/data/monitoring.token`.
 
+## Plattform-API
+
+MatBu erfüllt den Plattform-Vertrag der Mat-Apps (MatDesign `docs/PLATFORM.md`, Paket MatPlatform 1.0.0 als Kopie in `MatPlatform/`). Mattiverse und andere Apps können MatBu darüber anzeigen, überwachen, einrichten und bedienen, ohne MatBu zu kennen.
+
+| Endpunkt | Zweck | Zugang |
+| --- | --- | --- |
+| `GET /api` | Selbstbeschreibung (MatApiDefinition): Seiten, Kacheln, Einstellungen, Aktionen, Rollen | anonym |
+| `GET /api/health` | `ok`, `degraded` oder `down` mit den Prüfungen `database`, `backups`, `objects`, ggf. `secondaries`; HTTP 503 nur bei `down` | anonym |
+| `GET /api/state`, `GET /api/state/{key}` | Werte der Kacheln | `X-Api-Key` oder Token |
+| `GET /api/configure`, `PUT /api/configure` | die wenigen Grundeinstellungen | `X-Api-Key` oder Token |
+| `POST /api/actions/{id}` | Aktion ausführen | `X-Api-Key` oder Token |
+
+- **Kacheln:** aktive Backup-Jobs, Ergebnis des letzten Backups (Status), letztes erfolgreiches Backup, nächster geplanter Lauf, laufende Ausführungen, Fehlschläge der letzten 24 Stunden, belegter Backup-Speicher (inkl. Versionen), Objekte mit Warnung.
+- **Einstellungen:** Zeitzone des Zeitplans sowie Webhook- und E-Mail-Benachrichtigung (SMTP-Server, Port, Benutzer, Passwort, Absender, Empfänger). Es gelten dieselben Regeln wie auf den Seiten **Einstellungen → Allgemein** und **Benachrichtigungen**; das SMTP-Passwort wird nie zurückgegeben (`{"isSet": true}`), `""` löscht es. Alles Weitere bleibt in der Oberfläche.
+- **Aktionen:** MatBu öffnen, Ausführungen öffnen, **Alle Backups jetzt starten** (plant jeden aktiven Job sofort ein; bereits geplante oder laufende Jobs bleiben unverändert), alle Einstellungen, Benachrichtigungen.
+- **Rollen:** `admin`, `operator`, `user` (nur lesen).
+
+Die Plattform-Endpunkte liegen neben MatBus eigener API; deren Pfade (`/api/tasks`, `/api/objects`, `/api/monitoring/...`, `/api/gateway/...`, `/api/secondary/...`, `/api/auth/...`) und Zugänge (Session, Monitoring-Token, Instanz-Token der Secondaries) bleiben unverändert. `MAT_API_KEY` öffnet nur die Plattform-Endpunkte. Der Docker-`HEALTHCHECK` des Images ruft `/api/health` auf; `/health` antwortet weiterhin.
+
+### Anmeldung über MatIdentity
+
+Ist `MATIDENTITY_AUTHORITY` gesetzt, leitet die Anmeldeseite direkt zu MatIdentity weiter (OpenID Connect, Authorization Code mit PKCE). Der lokale Zugang bleibt unter `/Login?local=1` erreichbar, z. B. wenn MatIdentity nicht erreichbar ist (dann zeigt die Anmeldeseite das lokale Formular mit einem Hinweis). Die erste Anmeldung verknüpft die Person über `sub` mit einem lokalen Benutzer: einem noch nicht verknüpften Benutzer, dessen Benutzername die E-Mail-Adresse ist, sonst einem neuen Benutzer. Liefert MatIdentity die Rolle (`admin`, `operator`, `user`), folgt MatBu ihr bei jeder Anmeldung; sonst gilt die Rolle aus der Benutzerverwaltung (neue Benutzer: `user`). Die Abmeldung beendet auch die Sitzung bei MatIdentity. In MatIdentity sind als Adressen `/signin-oidc` (Anmeldung) und `/signout-callback-oidc` (Abmeldung) einzutragen. Ohne `MATIDENTITY_AUTHORITY` verhält sich MatBu wie bisher.
+
+| Variable | Standard | Wirkung |
+| --- | --- | --- |
+| `MAT_API_KEY` | leer (aus) | Schlüssel für `X-Api-Key` auf `/api/state`, `/api/configure`, `/api/actions`; Mattiverse setzt ihn |
+| `MATIDENTITY_AUTHORITY` | leer (aus) | Adresse von MatIdentity, z. B. `https://id.example.com`; gesetzt = Anmeldung über MatIdentity |
+| `MATIDENTITY_CLIENT_ID` | `matbu` | Client von MatBu in MatIdentity (auch Audience der Tokens auf `/api`) |
+| `MATIDENTITY_CLIENT_SECRET` | leer | Secret dieses Clients |
+| `MATIDENTITY_INTERNAL_URL` | leer | optional: Adresse, unter der MatBu MatIdentity innerhalb von Docker erreicht (z. B. `http://matidentity:2300`) |
+
+Keine dieser Variablen ist erforderlich. Secondaries und der Worker-Container brauchen sie nicht.
+
 ## Benachrichtigungen
 
 Unter **Benutzer → Benachrichtigungen** oder über das Glocken-Symbol können Administratoren Webhook- und SMTP-Benachrichtigungen konfigurieren und getrennt testen. MatBu kann erfolgreiche und fehlgeschlagene Backup- sowie Restore-Jobs melden. Webhooks erhalten JSON mit Job, Route, Größen, Ziel und Fehlerdetails. Zustellungen werden in SQLite protokolliert, bei Fehlern bis zu dreimal wiederholt und nach einem Container-Neustart nicht doppelt versendet. Das SMTP-Passwort wird verschlüsselt in `/data/notifications.json` gespeichert; die Data-Protection-Schlüssel liegen ebenfalls im persistenten Volume.

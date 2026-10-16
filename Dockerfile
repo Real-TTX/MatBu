@@ -18,4 +18,5 @@ COPY --from=build /app/publish .
 ENV ASPNETCORE_URLS=http://+:9293
 ENV MATBU_DATA_PATH=/data
 VOLUME ["/data"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD curl -fsS http://127.0.0.1:9293/api/health || exit 1
 ENTRYPOINT ["dotnet", "MatBu.dll"]

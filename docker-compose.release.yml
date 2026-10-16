@@ -8,6 +8,12 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       MATBU_DATA_PATH: /data
       MATBU_TRUST_FORWARD_HEADERS: "${MATBU_TRUST_FORWARD_HEADERS:-true}"
+      # Mat platform contract and sign-in (all optional, see README "Plattform-API"):
+      # MAT_API_KEY: ""                    # the key of /api/state, /api/configure, /api/actions (Mattiverse sets it)
+      # MATIDENTITY_AUTHORITY: ""          # https://id.example.com: sign-in through MatIdentity
+      # MATIDENTITY_CLIENT_ID: "matbu"
+      # MATIDENTITY_CLIENT_SECRET: ""
+      # MATIDENTITY_INTERNAL_URL: ""       # http://matidentity:2300 inside Docker
     volumes:
       - matbu-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
