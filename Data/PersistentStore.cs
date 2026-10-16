@@ -98,6 +98,8 @@ public sealed class PersistentStore
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyMode TEXT NOT NULL DEFAULT 'None'"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyContainerNames TEXT NOT NULL DEFAULT ''"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyTimeoutSeconds INTEGER NOT NULL DEFAULT 60"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE \"User\" ADD COLUMN ExternalSubject TEXT NULL"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE UserSession ADD COLUMN IdToken TEXT NULL"); } catch (SqliteException) { }
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS JobLabel (Id INTEGER NOT NULL CONSTRAINT PK_JobLabel PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL, Color TEXT NOT NULL, CreateDate TEXT NOT NULL, CreateUserId INTEGER NOT NULL, UpdateDate TEXT NOT NULL, UpdateUserId INTEGER NOT NULL)");
         db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS IX_JobLabel_Name ON JobLabel (Name COLLATE NOCASE)");
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS BackupTaskLabel (Id INTEGER NOT NULL CONSTRAINT PK_BackupTaskLabel PRIMARY KEY AUTOINCREMENT, BackupTaskId INTEGER NOT NULL, JobLabelId INTEGER NOT NULL, CreateDate TEXT NOT NULL, CreateUserId INTEGER NOT NULL, UpdateDate TEXT NOT NULL, UpdateUserId INTEGER NOT NULL)");
@@ -179,6 +181,26 @@ public sealed class PersistentStore
                 BackupChunks = db.BackupChunks.AsNoTracking().ToList(),
                 TransferChunks = db.TransferChunks.AsNoTracking().ToList(),
                 NotificationDeliveries = db.NotificationDeliveries.AsNoTracking().ToList()
+            };
+        }
+    }
+
+    /// <summary>
+    /// The tables an overview needs (instances, objects, tasks, runs, snapshots) without the large chunk and file catalogs that
+    /// <see cref="Read"/> also loads: cheap enough for the health and state endpoints of the platform contract.
+    /// </summary>
+    public AppData ReadOverview()
+    {
+        lock (_gate)
+        {
+            using var db = new MatBuDbContext(_options);
+            return new AppData
+            {
+                Instances = db.Instances.AsNoTracking().ToList(),
+                Objects = db.Objects.AsNoTracking().ToList(),
+                Tasks = db.Tasks.AsNoTracking().ToList(),
+                TransferJobs = db.TransferJobs.AsNoTracking().ToList(),
+                BackupSnapshots = db.BackupSnapshots.AsNoTracking().ToList()
             };
         }
     }

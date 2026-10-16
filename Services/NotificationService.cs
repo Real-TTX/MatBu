@@ -54,14 +54,20 @@ public sealed class NotificationSettingsStore
         }
     }
 
-    public NotificationSettings Save(NotificationSettings input)
+    /// <summary>
+    /// Saves <paramref name="input"/>. An empty <see cref="NotificationSettings.SmtpPassword"/> keeps the stored password (the settings page never shows it),
+    /// unless <paramref name="clearPassword"/> is set.
+    /// </summary>
+    public NotificationSettings Save(NotificationSettings input, bool clearPassword = false)
     {
         lock (_gate)
         {
             var existing = File.Exists(_path)
                 ? JsonSerializer.Deserialize<StoredNotificationSettings>(File.ReadAllText(_path), JsonOptions) ?? new StoredNotificationSettings()
                 : new StoredNotificationSettings();
-            var password = string.IsNullOrEmpty(input.SmtpPassword) ? Unprotect(existing.ProtectedSmtpPassword) : input.SmtpPassword;
+            var password = !string.IsNullOrEmpty(input.SmtpPassword) ? input.SmtpPassword
+                : clearPassword ? ""
+                : Unprotect(existing.ProtectedSmtpPassword);
             var stored = new StoredNotificationSettings
             {
                 WebhookEnabled = input.WebhookEnabled,
@@ -108,6 +114,25 @@ public sealed class NotificationSettingsStore
         NotifyOnFailure = source.NotifyOnFailure,
         ActivationDate = source.ActivationDate
     };
+}
+
+/// <summary>The rules of the notification settings (the settings page and the platform API).</summary>
+public static class NotificationSettingsRules
+{
+    /// <summary>The first problem of <paramref name="settings"/>, or null.</summary>
+    public static string? Validate(NotificationSettings settings)
+    {
+        if (!settings.WebhookEnabled && !settings.EmailEnabled) return null;
+        if (!settings.NotifyOnSuccess && !settings.NotifyOnFailure) return "Aktiviere mindestens ein Ereignis: Erfolg oder Fehler.";
+        if (settings.WebhookEnabled && !IsWebhookUrl(settings.WebhookUrl))
+            return "Die Webhook-URL muss eine absolute HTTP- oder HTTPS-Adresse sein.";
+        if (settings.EmailEnabled && (string.IsNullOrWhiteSpace(settings.SmtpHost) || settings.SmtpPort is < 1 or > 65535 || string.IsNullOrWhiteSpace(settings.MailFrom) || string.IsNullOrWhiteSpace(settings.MailRecipients)))
+            return "Für E-Mail sind SMTP-Host, Port, Absender und Empfänger erforderlich.";
+        return null;
+    }
+
+    public static bool IsWebhookUrl(string? value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
 }
 
 public sealed record NotificationSendResult(bool Success, string Message);

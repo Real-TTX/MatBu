@@ -65,6 +65,15 @@ public sealed class GeneralSettingsStore
         return normalized;
     }
 
+    /// <summary>True when <paramref name="id"/> is a time zone this system knows (the rule of the settings page and the platform API).</summary>
+    public static bool IsKnownTimeZone(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return false;
+        try { TimeZoneInfo.FindSystemTimeZoneById(id.Trim()); return true; }
+        catch (TimeZoneNotFoundException) { return false; }
+        catch (InvalidTimeZoneException) { return false; }
+    }
+
     /// <summary>Resolve the configured schedule time zone, falling back to the machine local zone if unknown.</summary>
     public TimeZoneInfo ResolveTimeZone()
     {

@@ -26,7 +26,7 @@ public sealed class GeneralModel(PersistentStore store, GeneralSettingsStore set
     public IActionResult OnPostSave()
     {
         if (!LoadAdmin()) return CurrentUser is null ? RedirectToPage("/Login") : Forbid();
-        if (string.IsNullOrWhiteSpace(Input.TimeZoneId) || !TryResolve(Input.TimeZoneId))
+        if (!GeneralSettingsStore.IsKnownTimeZone(Input.TimeZoneId))
         {
             Message = "Die gewählte Zeitzone ist auf diesem System nicht bekannt.";
             MessageIsError = true;
@@ -58,13 +58,6 @@ public sealed class GeneralModel(PersistentStore store, GeneralSettingsStore set
         var resolved = settingsStore.ResolveTimeZone();
         CurrentZoneLabel = resolved.Id;
         CurrentLocalTime = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, resolved).ToString("dd.MM.yyyy HH:mm");
-    }
-
-    private static bool TryResolve(string id)
-    {
-        try { TimeZoneInfo.FindSystemTimeZoneById(id); return true; }
-        catch (TimeZoneNotFoundException) { return false; }
-        catch (InvalidTimeZoneException) { return false; }
     }
 
     private static string FormatOffset(TimeSpan offset) =>

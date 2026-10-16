@@ -260,6 +260,8 @@ public sealed class AppUser : AuditedEntity
     public string UserName { get; set; } = "";
     public string PasswordHash { get; set; } = "";
     public UserRole Role { get; set; }
+    /// <summary>The claim <c>sub</c> of MatIdentity once the user signed in through it; null for a purely local user.</summary>
+    public string? ExternalSubject { get; set; }
 }
 
 public sealed class UserSession : AuditedEntity
@@ -267,6 +269,8 @@ public sealed class UserSession : AuditedEntity
     public string Token { get; set; } = "";
     public long UserId { get; set; }
     public DateTimeOffset ExpiresDate { get; set; }
+    /// <summary>The ID token of a sign-in through MatIdentity (the id_token_hint of the sign-out there); null for a local sign-in.</summary>
+    public string? IdToken { get; set; }
 }
 
 public sealed class AppData

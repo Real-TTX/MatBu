@@ -26,7 +26,7 @@ public sealed class NotificationsModel(
     public IActionResult OnPostSave()
     {
         if (!LoadAdmin()) return CurrentUser is null ? RedirectToPage("/Login") : Forbid();
-        var error = Validate(Input);
+        var error = NotificationSettingsRules.Validate(Input);
         if (error is not null) return Show(error, true);
         settingsStore.Save(Input);
         LoadSettings();
@@ -75,17 +75,6 @@ public sealed class NotificationsModel(
         LoadDeliveries();
         ViewData["UserName"] = CurrentUser!.UserName;
         return Page();
-    }
-
-    private static string? Validate(NotificationSettings settings)
-    {
-        if (!settings.WebhookEnabled && !settings.EmailEnabled) return null;
-        if (!settings.NotifyOnSuccess && !settings.NotifyOnFailure) return "Aktiviere mindestens ein Ereignis: Erfolg oder Fehler.";
-        if (settings.WebhookEnabled && (!Uri.TryCreate(settings.WebhookUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")))
-            return "Die Webhook-URL muss eine absolute HTTP- oder HTTPS-Adresse sein.";
-        if (settings.EmailEnabled && (string.IsNullOrWhiteSpace(settings.SmtpHost) || settings.SmtpPort is < 1 or > 65535 || string.IsNullOrWhiteSpace(settings.MailFrom) || string.IsNullOrWhiteSpace(settings.MailRecipients)))
-            return "Für E-Mail sind SMTP-Host, Port, Absender und Empfänger erforderlich.";
-        return null;
     }
 
     private void LoadDeliveries()
