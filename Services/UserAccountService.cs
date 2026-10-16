@@ -6,23 +6,29 @@ namespace MatBu.Services;
 
 /// <summary>A person signed in by MatIdentity, as MatBu needs it to find or create its local user.</summary>
 /// <param name="Subject">The claim <c>sub</c>, the stable id of the person.</param>
-/// <param name="Email">The claim <c>email</c>: links the local user with this user name at the first sign-in.</param>
+/// <param name="Email">The claim <c>email</c>: the local user with this user name is linked only after its password (<see cref="UserAccountService.LinkExternal"/>).</param>
 /// <param name="Name">The claim <c>name</c>.</param>
 /// <param name="PreferredUserName">The claim <c>preferred_username</c>.</param>
 /// <param name="Role">The claim <c>role</c> (<c>admin</c>, <c>operator</c>, <c>user</c>) when MatIdentity decides the role, else null.</param>
 public sealed record ExternalIdentity(string Subject, string? Email, string? Name, string? PreferredUserName, string? Role);
 
-/// <summary>The outcome of <see cref="UserAccountService.SignInExternal"/>.</summary>
+/// <summary>The outcome of <see cref="UserAccountService.SignInExternal"/> and <see cref="UserAccountService.LinkExternal"/>.</summary>
 public sealed record ExternalSignInResult(AppUser? User, string? Error)
 {
     public bool Succeeded => User is not null;
+
+    /// <summary>
+    /// The id of the not yet linked local user whose user name is the e-mail address: it is not linked by the address alone (anyone can create a
+    /// user with any name), the person has to sign in locally with its password first.
+    /// </summary>
+    public long? LinkUserId { get; init; }
 }
 
 /// <summary>
 /// MatBu's users and sessions: the session cookie <see cref="SessionCookie"/> and the sign-in of a person that MatIdentity signed in
-/// (matched by <see cref="AppUser.ExternalSubject"/>, else by an e-mail address that is the local user name, else created).
+/// (matched by <see cref="AppUser.ExternalSubject"/>, else created; a local user whose name is the e-mail address is linked only after its password).
 /// </summary>
-public sealed class UserAccountService(PersistentStore store)
+public sealed class UserAccountService(PersistentStore store, ILogger<UserAccountService> logger)
 {
     /// <summary>The cookie that carries the token of a <see cref="UserSession"/>.</summary>
     public const string SessionCookie = "matbu_session";
@@ -40,9 +46,10 @@ public sealed class UserAccountService(PersistentStore store)
     };
 
     /// <summary>
-    /// Finds the local user of <paramref name="identity"/>: by the subject, else the not yet linked user whose user name is the e-mail address
-    /// (then it is linked), else a new user (without a usable password: the way in is MatIdentity). The role follows the claim <c>role</c> when it is
-    /// one of MatBu's roles; a new user without it gets the least role.
+    /// Finds the local user of <paramref name="identity"/>: by the subject, else a new user (without a usable password: the way in is MatIdentity).
+    /// When the one not yet linked user's name is the e-mail address, nothing is changed and nothing is created: the result names it in
+    /// <see cref="ExternalSignInResult.LinkUserId"/>, and it is linked by <see cref="LinkExternal"/> once its password has been given. The role follows
+    /// the claim <c>role</c> when it is one of MatBu's roles; a new user without it gets the least role.
     /// </summary>
     public ExternalSignInResult SignInExternal(ExternalIdentity identity)
     {
@@ -50,20 +57,16 @@ public sealed class UserAccountService(PersistentStore store)
 
         var role = RoleOf(identity.Role);
         AppUser? result = null;
+        long? link = null;
         store.Update(data =>
         {
             var now = DateTimeOffset.UtcNow;
             var user = data.Users.FirstOrDefault(item => item.ExternalSubject == identity.Subject);
-            if (user is null && !string.IsNullOrWhiteSpace(identity.Email))
+            if (user is null && MatchByEmail(data.Users, identity.Email) is { } match)
             {
-                user = data.Users.FirstOrDefault(item =>
-                    string.IsNullOrEmpty(item.ExternalSubject) &&
-                    item.UserName.Equals(identity.Email.Trim(), StringComparison.OrdinalIgnoreCase));
-                if (user is not null)
-                {
-                    user.ExternalSubject = identity.Subject;
-                    user.UpdateDate = now;
-                }
+                // The user name proves nothing about the person: the account is linked only after its password (LinkExternal).
+                link = match.Id;
+                return;
             }
 
             if (user is null)
@@ -89,7 +92,58 @@ public sealed class UserAccountService(PersistentStore store)
             result = user;
         });
 
+        return link is { } id ? new ExternalSignInResult(null, null) { LinkUserId = id } : new ExternalSignInResult(result, null);
+    }
+
+    /// <summary>
+    /// Links the local user <paramref name="userId"/> with the person MatIdentity signed in, after that user has just signed in locally with its
+    /// password (the proof that the account belongs to the person). Only while it is still the one not yet linked user whose name is the e-mail
+    /// address and no other user has the subject. Sets the subject, follows the claim <c>role</c> like <see cref="SignInExternal"/> and logs it.
+    /// </summary>
+    public ExternalSignInResult LinkExternal(long userId, ExternalIdentity identity)
+    {
+        if (string.IsNullOrWhiteSpace(identity.Subject)) return new ExternalSignInResult(null, "MatIdentity did not send a subject.");
+
+        var role = RoleOf(identity.Role);
+        AppUser? result = null;
+        string? error = null;
+        store.Update(data =>
+        {
+            if (data.Users.Any(item => item.ExternalSubject == identity.Subject))
+            {
+                error = "Another user is already linked with this MatIdentity account.";
+                return;
+            }
+
+            var user = MatchByEmail(data.Users, identity.Email);
+            if (user is null || user.Id != userId)
+            {
+                error = "The user is no longer the one that matched.";
+                return;
+            }
+
+            user.ExternalSubject = identity.Subject;
+            if (role is { } claimed) user.Role = claimed;
+            user.UpdateDate = DateTimeOffset.UtcNow;
+            result = user;
+        });
+
+        if (result is null)
+        {
+            logger.LogWarning("User {UserId} was not linked with MatIdentity ({Subject}): {Error}", userId, identity.Subject, error);
+            return new ExternalSignInResult(null, error);
+        }
+
+        logger.LogInformation("{UserName} ({Role}) linked with MatIdentity ({Subject}) after the local sign-in", result.UserName, result.Role, identity.Subject);
         return new ExternalSignInResult(result, null);
+    }
+
+    /// <summary>The user with this name and password, or null.</summary>
+    public AppUser? FindByPassword(string? userName, string? password)
+    {
+        if (string.IsNullOrWhiteSpace(userName) || string.IsNullOrEmpty(password)) return null;
+        var user = store.Read().Users.FirstOrDefault(item => item.UserName.Equals(userName.Trim(), StringComparison.OrdinalIgnoreCase));
+        return user is not null && PersistentStore.VerifyPassword(password, user.PasswordHash) ? user : null;
     }
 
     /// <summary>Starts a session of <paramref name="userId"/> and answers its token (the value of <see cref="SessionCookie"/>).</summary>
@@ -124,6 +178,14 @@ public sealed class UserAccountService(PersistentStore store)
     {
         if (string.IsNullOrWhiteSpace(sessionToken)) return;
         store.Update(data => data.UserSessions.RemoveAll(item => item.Token == sessionToken));
+    }
+
+    /// <summary>The one not yet linked user whose user name is <paramref name="email"/>, or null.</summary>
+    private static AppUser? MatchByEmail(IEnumerable<AppUser> users, string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return null;
+        var matches = users.Where(item => string.IsNullOrEmpty(item.ExternalSubject) && item.UserName.Equals(email.Trim(), StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
+        return matches.Count == 1 ? matches[0] : null;
     }
 
     private static string UniqueUserName(IReadOnlyCollection<AppUser> users, ExternalIdentity identity)

@@ -174,16 +174,19 @@ public sealed class IdentityUsersTests(IdentityFactory site) : IClassFixture<Ide
     }
 
     [Fact]
-    public async Task An_existing_local_user_with_the_e_mail_as_name_is_linked_and_keeps_its_role_without_a_claim()
+    public async Task An_existing_local_user_with_the_e_mail_as_name_is_not_linked_by_the_address_alone()
     {
         site.Update(data => data.Users.Add(new AppUser { Id = 9001, UserName = "Linked@Example.com", PasswordHash = PersistentStore.HashPassword("pw"), Role = UserRole.Admin, CreateDate = DateTimeOffset.UtcNow, UpdateDate = DateTimeOffset.UtcNow }));
+        var users = Store().Read().Users.Count;
 
-        var (result, _) = await SignInAsync(new MatIdentityPerson("sub-linked", "linked@example.com", null, null, null, null, new()));
-        Assert.True(result.Succeeded);
+        var (result, cookie) = await SignInAsync(new MatIdentityPerson("sub-linked", "linked@example.com", null, null, null, null, new()));
+        Assert.False(result.Succeeded);
+        Assert.Equal("9001", result.LinkAccount);
+        Assert.DoesNotContain("matbu_session=", cookie);
 
-        var user = Assert.Single(Store().Read().Users, u => u.Id == 9001);
-        Assert.Equal("sub-linked", user.ExternalSubject);
-        Assert.Equal(UserRole.Admin, user.Role);
+        var data = Store().Read();
+        Assert.Null(Assert.Single(data.Users, u => u.Id == 9001).ExternalSubject);
+        Assert.Equal(users, data.Users.Count);
     }
 
     [Fact]

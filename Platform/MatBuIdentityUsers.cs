@@ -1,3 +1,4 @@
+using System.Globalization;
 using MatBu.Services;
 using MatPlatform;
 
@@ -5,15 +6,21 @@ namespace MatBu.Platform;
 
 /// <summary>
 /// MatBu's side of the sign-in through MatIdentity (MatPlatform <see cref="IMatIdentityUsers"/>): the person is mapped to a local user by
-/// <see cref="UserAccountService.SignInExternal"/> (by <c>sub</c>, else the not yet linked user whose name is the e-mail address, else a new user;
-/// the claim <c>role</c> when it is there) and then signed in with MatBu's own session cookie, like a local sign-in, keeping the ID token
-/// with the session for the sign-out at MatIdentity.
+/// <see cref="UserAccountService.SignInExternal"/> (by <c>sub</c>, else a new user; the claim <c>role</c> when it is there) and then signed in with
+/// MatBu's own session cookie, like a local sign-in, keeping the ID token with the session for the sign-out at MatIdentity. A not yet linked user
+/// whose name is the e-mail address is not entered: the answer is <see cref="MatIdentitySignInResult.LinkRequired"/>, the person signs in once with
+/// that user's password on <c>/Login?local=1&amp;link=1</c> and the login page links it (<see cref="UserAccountService.LinkExternal"/>).
 /// </summary>
 public sealed class MatBuIdentityUsers(UserAccountService accounts, ILogger<MatBuIdentityUsers> logger) : IMatIdentityUsers
 {
     public Task<MatIdentitySignInResult> SignInAsync(MatIdentityPerson person, HttpContext http, CancellationToken ct)
     {
         var result = accounts.SignInExternal(new ExternalIdentity(person.Subject, person.Email, person.Name, person.PreferredUserName, person.Role));
+        if (result.LinkUserId is { } linkUserId)
+        {
+            return Task.FromResult(MatIdentitySignInResult.LinkRequired(linkUserId.ToString(CultureInfo.InvariantCulture)));
+        }
+
         if (!result.Succeeded)
         {
             return Task.FromResult(MatIdentitySignInResult.Refused(result.Error ?? "refused"));

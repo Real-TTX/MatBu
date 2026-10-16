@@ -1,4 +1,4 @@
-// MatPlatform 1.0.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.1.0 – a copy from MatDesign, do not edit here
 using System.Globalization;
 using System.Net.Mail;
 using System.Text.Json;

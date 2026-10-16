@@ -113,3 +113,4 @@ code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--teal
 .stage-transfer .progress-fill{background:#5c8fd6}
 .stage-write .progress-fill{background:var(--teal)}
 @media(max-width:640px){.pipeline-stages{grid-template-columns:1fr}}
+.login-link{background:var(--mint);color:var(--ink);border-radius:7px;padding:9px 11px;margin-bottom:15px;font-size:12px}.login-link p{margin:0 0 8px}.login-link form{margin:0}

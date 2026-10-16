@@ -1,4 +1,4 @@
-// MatPlatform 1.0.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.1.0 – a copy from MatDesign, do not edit here
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
