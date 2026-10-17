@@ -1,9 +1,10 @@
-// MatPlatform 1.1.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.2.0 – a copy from MatDesign, do not edit here
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
@@ -87,6 +88,12 @@ public sealed class MatIdentitySignInOptions
     /// <summary>The scopes asked for.</summary>
     public IList<string> Scopes { get; } = ["openid", "profile", "email", "roles", "offline_access"];
 
+    /// <summary>
+    /// Behind a TLS-terminating proxy (Matcad) the scheme of a request comes from <c>X-Forwarded-Proto</c> (<see cref="MatForwardedProto"/>): only the
+    /// scheme, never the client address or the host. Default on; off when the app's own ForwardedHeaders policy must be the only one.
+    /// </summary>
+    public bool TrustForwardedProto { get; set; } = true;
+
     internal string SignedOutTarget => SignedOutRedirect ?? LoginPath + "?signedOut=1";
 
     internal string FailedTarget => FailedRedirect ?? LoginPath + "?local=1&ssoError=1";
@@ -134,6 +141,12 @@ public static class MatIdentitySignIn
         if (!settings.IdentityEnabled)
         {
             return builder;
+        }
+
+        if (signIn.TrustForwardedProto)
+        {
+            // Behind Matcad the app speaks http: without the browser's scheme the redirect_uri is http and the correlation cookies are not Secure.
+            builder.Services.AddTransient<IStartupFilter, MatForwardedProtoStartupFilter>();
         }
 
         var authority = new Uri(settings.Authority!);

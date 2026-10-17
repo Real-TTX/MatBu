@@ -191,7 +191,7 @@ Der Endpunkt antwortet mit `200 Healthy`, wenn alle Objects erreichbar sind, kei
 
 ## Plattform-API
 
-MatBu erfüllt den Plattform-Vertrag der Mat-Apps (MatDesign `docs/PLATFORM.md`, Paket MatPlatform 1.0.0 als Kopie in `MatPlatform/`). Mattiverse und andere Apps können MatBu darüber anzeigen, überwachen, einrichten und bedienen, ohne MatBu zu kennen.
+MatBu erfüllt den Plattform-Vertrag der Mat-Apps (MatDesign `docs/PLATFORM.md`, Paket MatPlatform 1.2.0 als Kopie in `MatPlatform/`). Mattiverse und andere Apps können MatBu darüber anzeigen, überwachen, einrichten und bedienen, ohne MatBu zu kennen.
 
 | Endpunkt | Zweck | Zugang |
 | --- | --- | --- |
