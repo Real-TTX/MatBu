@@ -10,6 +10,10 @@
     <!-- MatPlatform (the copy in MatPlatform/, from MatDesign tools/matplatform-copy.js) needs these two. -->
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.13" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.13" />
+    <!-- Sends the notification mails (STARTTLS and TLS from the first byte, as MatSMTP may ask for). -->
+    <PackageReference Include="MailKit" Version="4.18.1" />
+    <!-- MailKit brings an older one with known vulnerabilities: pinned to the patched release. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
     <PackageReference Include="SMBLibrary" Version="1.5.7.1" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />

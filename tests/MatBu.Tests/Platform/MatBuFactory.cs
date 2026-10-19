@@ -35,10 +35,25 @@ public class MatBuFactory : WebApplicationFactory<Program>
     {
     }
 
-    protected MatBuFactory(bool withKey, string? authority, bool reachable = true)
+    /// <summary>The <c>MATSMTP_*</c> variables of this factory (all unset unless a subclass names them).</summary>
+    private readonly Dictionary<string, string?> _smtp = SmtpVariables.ToDictionary(name => name, _ => (string?)null);
+
+    public static readonly string[] SmtpVariables =
+    [
+        MatSmtpSettings.HostVariable, MatSmtpSettings.PortVariable, MatSmtpSettings.UsernameVariable,
+        MatSmtpSettings.PasswordVariable, MatSmtpSettings.FromVariable, MatSmtpSettings.TlsVariable,
+    ];
+
+    protected MatBuFactory(bool withKey, string? authority, bool reachable = true, IReadOnlyDictionary<string, string>? smtp = null)
     {
         _authority = authority;
         _reachable = reachable;
+        foreach (var (name, value) in smtp ?? new Dictionary<string, string>())
+        {
+            _smtp[name] = value;
+        }
+
+        SetSmtpVariables();
         Directory.CreateDirectory(_data);
         Environment.SetEnvironmentVariable("MATBU_DATA_PATH", _data);
         Environment.SetEnvironmentVariable(MatPlatformSettings.ApiKeyVariable, withKey ? ApiKey : null);
@@ -53,6 +68,7 @@ public class MatBuFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Development");
         // Program reads these before the host is built; set them again in case another factory changed them in between.
         Environment.SetEnvironmentVariable("MATBU_DATA_PATH", _data);
+        SetSmtpVariables();
 
         builder.ConfigureTestServices(services =>
         {
@@ -99,15 +115,37 @@ public class MatBuFactory : WebApplicationFactory<Program>
         return client;
     }
 
+    /// <summary>A browser signed in as the first administrator (admin/admin of a fresh installation).</summary>
+    public async Task<HttpClient> AdminAsync()
+    {
+        var browser = Browser();
+        var page = await (await browser.GetAsync("/Login?local=1")).Content.ReadAsStringAsync();
+        var signedIn = await SignIn.PostLocalFormAsync(browser, "/Login?local=1", page);
+        if (signedIn.StatusCode != HttpStatusCode.Redirect)
+        {
+            throw new InvalidOperationException($"The sign-in as admin failed: {(int)signedIn.StatusCode}");
+        }
+
+        return browser;
+    }
+
     /// <summary>Changes the data of the app through its store.</summary>
     public void Update(Action<AppData> change) => Services.GetRequiredService<PersistentStore>().Update(change);
+
+    private void SetSmtpVariables()
+    {
+        foreach (var (name, value) in _smtp)
+        {
+            Environment.SetEnvironmentVariable(name, value);
+        }
+    }
 
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
 
         // The other tests build their stores without these.
-        foreach (var variable in new[] { "MATBU_DATA_PATH", MatPlatformSettings.ApiKeyVariable, MatPlatformSettings.AuthorityVariable, MatPlatformSettings.ClientSecretVariable })
+        foreach (var variable in new[] { "MATBU_DATA_PATH", MatPlatformSettings.ApiKeyVariable, MatPlatformSettings.AuthorityVariable, MatPlatformSettings.ClientSecretVariable }.Concat(SmtpVariables))
         {
             Environment.SetEnvironmentVariable(variable, null);
         }
@@ -138,6 +176,24 @@ public sealed class IdentityFactory() : MatBuFactory(withKey: true, authority: I
 
 /// <summary>With <c>MATIDENTITY_AUTHORITY</c> pointing at an address where nothing answers (MatIdentity is down).</summary>
 public sealed class UnreachableIdentityFactory() : MatBuFactory(withKey: true, authority: "http://127.0.0.1:9", reachable: false);
+
+/// <summary>With the <c>MATSMTP_*</c> variables Mattiverse writes when MatSMTP is installed: all mail through MatSMTP, the SMTP settings fixed.</summary>
+public sealed class MatSmtpFactory() : MatBuFactory(withKey: true, authority: null, smtp: Variables)
+{
+    public const string Host = "matsmtp.test";
+    public const string Password = "relay-s3cret-0123";
+    public const string From = "matbu@mail.example.com";
+
+    public static readonly IReadOnlyDictionary<string, string> Variables = new Dictionary<string, string>
+    {
+        [MatSmtpSettings.HostVariable] = Host,
+        [MatSmtpSettings.PortVariable] = "2025",
+        [MatSmtpSettings.UsernameVariable] = "matbu",
+        [MatSmtpSettings.PasswordVariable] = Password,
+        [MatSmtpSettings.FromVariable] = From,
+        [MatSmtpSettings.TlsVariable] = "starttls",
+    };
+}
 
 /// <summary>An installation with one backup job, a successful run two hours ago and a failed run one hour ago.</summary>
 public sealed class SeededFactory : MatBuFactory

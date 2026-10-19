@@ -70,6 +70,10 @@ builder.Services.AddHostedService<TransferCacheMaintenanceService>();
 builder.Services.AddSingleton<NotificationSettingsStore>();
 builder.Services.AddSingleton<TransferSettingsStore>();
 builder.Services.AddSingleton<GeneralSettingsStore>();
+// Mail through MatSMTP when Mattiverse provides it (MATSMTP_*, MatDesign docs/PLATFORM.md): all mail goes there and the SMTP settings are fixed.
+var smtp = MatSmtpSettings.From(builder.Configuration);
+builder.Services.AddSingleton(smtp);
+builder.Services.AddSingleton<MailServer>();
 builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddHostedService<NotificationDispatcher>();
 builder.Services.AddHostedService<SecondaryConnectionWorker>();
@@ -80,7 +84,7 @@ builder.Services.AddSingleton<UserAccountService>();
 // The Mat platform contract (MatDesign docs/PLATFORM.md): /api, /api/health, /api/state, /api/configure, /api/actions with MAT_API_KEY,
 // and the optional sign-in through MatIdentity (MATIDENTITY_*). The package MatPlatform (a copy in MatPlatform/) serves the endpoints;
 // MatBuPlatform describes MatBu and supplies the values.
-var platform = builder.AddMatPlatform<MatBuPlatform>(MatBuPlatform.Describe);
+var platform = builder.AddMatPlatform<MatBuPlatform>(o => MatBuPlatform.Describe(o, smtp));
 var authentication = builder.Services.AddAuthentication();
 if (platform.IdentityEnabled)
 {

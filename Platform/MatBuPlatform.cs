@@ -14,6 +14,7 @@ public sealed class MatBuPlatform(
     MatBuStatusService status,
     GeneralSettingsStore generalSettings,
     NotificationSettingsStore notificationSettings,
+    MailServer mailServer,
     ILogger<MatBuPlatform> logger) : IMatPlatformState, IMatPlatformConfiguration, IMatPlatformActions, IMatPlatformHealth
 {
     /// <summary>The id of MatBu in the platform (MatDesign AppRegistry.cs) and the default client id in MatIdentity.</summary>
@@ -25,9 +26,16 @@ public sealed class MatBuPlatform(
     public const string ExternalCookieScheme = "MatBu.External";
 
     /// <summary>The MatApiDefinition of MatBu (<c>GET /api</c>); <c>auth</c> and <c>endpoints</c> are filled in by MatPlatform.</summary>
-    public static void Describe(MatPlatformBuilder o)
+    public static void Describe(MatPlatformBuilder o) => Describe(o, new MatSmtpSettings());
+
+    /// <summary>
+    /// The definition with the mail through MatSMTP in <paramref name="smtp"/>: when it is configured, the SMTP server fields are fixed
+    /// (<see cref="MatSmtpSettings.Fix"/>: shown, not changeable, <c>PUT /api/configure</c> refuses them); whether e-mail is on and the recipients stay editable.
+    /// </summary>
+    public static void Describe(MatPlatformBuilder o, MatSmtpSettings smtp)
     {
         var T = o.T;
+        void Field(MatField field) => o.Field(MailServer.FixedKeys.Contains(field.Key) ? smtp.Fix(field, o.Language) : field);
 
         o.App(
             AppId,
@@ -70,11 +78,11 @@ public sealed class MatBuPlatform(
         });
         o.Field(new MatField("webhookUrl", T("Webhook-Adresse", "Webhook address"), "url") { Required = true, Max = 2000, ShowIf = MatField.When(("webhookEnabled", true)) });
         o.Field(new MatField("emailEnabled", T("E-Mail bei Backup-Ergebnissen", "E-mail on backup results"), "bool"));
-        o.Field(new MatField("smtpHost", T("SMTP-Server", "SMTP server"), "text") { Required = true, Max = 255, Placeholder = "mail.example.com", ShowIf = MatField.When(("emailEnabled", true)) });
-        o.Field(new MatField("smtpPort", T("SMTP-Port", "SMTP port"), "number") { Required = true, Min = 1, Max = 65535, ShowIf = MatField.When(("emailEnabled", true)) });
-        o.Field(new MatField("smtpUsername", T("SMTP-Benutzer", "SMTP user"), "text") { Max = 255, ShowIf = MatField.When(("emailEnabled", true)) });
-        o.Field(new MatField("smtpPassword", T("SMTP-Passwort", "SMTP password"), "secret") { ShowIf = MatField.When(("emailEnabled", true)) });
-        o.Field(new MatField("mailFrom", T("Absender", "Sender"), "email") { Required = true, Max = 255, ShowIf = MatField.When(("emailEnabled", true)) });
+        Field(new MatField("smtpHost", T("SMTP-Server", "SMTP server"), "text") { Required = true, Max = 255, Placeholder = "mail.example.com", ShowIf = MatField.When(("emailEnabled", true)) });
+        Field(new MatField("smtpPort", T("SMTP-Port", "SMTP port"), "number") { Required = true, Min = 1, Max = 65535, ShowIf = MatField.When(("emailEnabled", true)) });
+        Field(new MatField("smtpUsername", T("SMTP-Benutzer", "SMTP user"), "text") { Max = 255, ShowIf = MatField.When(("emailEnabled", true)) });
+        Field(new MatField("smtpPassword", T("SMTP-Passwort", "SMTP password"), "secret") { ShowIf = MatField.When(("emailEnabled", true)) });
+        Field(new MatField("mailFrom", T("Absender", "Sender"), "email") { Required = true, Max = 255, ShowIf = MatField.When(("emailEnabled", true)) });
         o.Field(new MatField("mailRecipients", T("Empfänger", "Recipients"), "text")
         {
             Required = true,
@@ -156,7 +164,8 @@ public sealed class MatBuPlatform(
     public Task<IReadOnlyDictionary<string, object?>> GetConfigurationAsync(MatPlatformCall call, CancellationToken ct)
     {
         var general = generalSettings.Read();
-        var notifications = notificationSettings.Read();
+        // The values in force: MatSMTP's server, user, password and sender when Mattiverse provides it.
+        var notifications = mailServer.InForce(notificationSettings.Read());
         IReadOnlyDictionary<string, object?> values = new Dictionary<string, object?>
         {
             ["timeZone"] = general.TimeZoneId,
@@ -188,6 +197,13 @@ public sealed class MatBuPlatform(
 
         foreach (var (key, value) in values)
         {
+            // MatPlatform refuses a fixed field already (MatValueChecker); this keeps it so when the check of the values is off.
+            if (mailServer.IsFixed && MailServer.FixedKeys.Contains(key))
+            {
+                errors[key] = mailServer.Describe(call.Language)!;
+                continue;
+            }
+
             switch (key)
             {
                 case "timeZone":
@@ -252,7 +268,7 @@ public sealed class MatBuPlatform(
             }
         }
 
-        if (notificationsChanged && NotificationSettingsRules.Validate(notifications) is { } problem)
+        if (notificationsChanged && mailServer.Validate(notifications) is { } problem)
         {
             errors.TryAdd(string.Empty, problem);
         }

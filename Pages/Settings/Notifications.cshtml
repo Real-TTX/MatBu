@@ -23,15 +23,19 @@
 
         <section class="panel form settings-card">
             <div class="panel-heading"><div><span class="route-label">Kanal</span><h2>E-Mail / SMTP</h2></div><label class="toggle-label"><input asp-for="Input.EmailEnabled" /> Aktiv</label></div>
+            @if (Model.SmtpFixed)
+            {
+                <p class="settings-help" id="smtp-fixed">@Model.SmtpFixedText</p>
+            }
             <div class="form-grid">
-                <div class="field"><label asp-for="Input.SmtpHost">SMTP-Host</label><input asp-for="Input.SmtpHost" placeholder="smtp.example.de" /></div>
-                <div class="field"><label asp-for="Input.SmtpPort">Port</label><input asp-for="Input.SmtpPort" type="number" min="1" max="65535" /></div>
-                <div class="field"><label asp-for="Input.SmtpUsername">Benutzername</label><input asp-for="Input.SmtpUsername" autocomplete="username" /></div>
-                <div class="field"><label asp-for="Input.SmtpPassword">Passwort</label><input asp-for="Input.SmtpPassword" type="password" autocomplete="new-password" placeholder="@(Model.HasStoredPassword ? "gespeichert · leer = behalten" : "SMTP-Passwort")" /></div>
-                <div class="field"><label asp-for="Input.MailFrom">Absender</label><input asp-for="Input.MailFrom" type="email" placeholder="matbu@example.de" /></div>
+                <div class="field"><label asp-for="Input.SmtpHost">SMTP-Host</label><input asp-for="Input.SmtpHost" disabled="@Model.SmtpFixed" placeholder="smtp.example.de" /></div>
+                <div class="field"><label asp-for="Input.SmtpPort">Port</label><input asp-for="Input.SmtpPort" disabled="@Model.SmtpFixed" type="number" min="1" max="65535" /></div>
+                <div class="field"><label asp-for="Input.SmtpUsername">Benutzername</label><input asp-for="Input.SmtpUsername" disabled="@Model.SmtpFixed" autocomplete="username" /></div>
+                <div class="field"><label asp-for="Input.SmtpPassword">Passwort</label><input asp-for="Input.SmtpPassword" disabled="@Model.SmtpFixed" type="password" autocomplete="new-password" placeholder="@(Model.SmtpFixed ? "von Mattiverse festgelegt" : Model.HasStoredPassword ? "gespeichert · leer = behalten" : "SMTP-Passwort")" /></div>
+                <div class="field"><label asp-for="Input.MailFrom">Absender</label><input asp-for="Input.MailFrom" disabled="@Model.SmtpFixed" type="email" placeholder="matbu@example.de" /></div>
                 <div class="field"><label asp-for="Input.MailRecipients">Empfänger</label><input asp-for="Input.MailRecipients" placeholder="admin@example.de; monitoring@example.de" /></div>
             </div>
-            <label class="toggle-label inline-toggle"><input asp-for="Input.SmtpUseSsl" /> TLS/SSL verwenden</label>
+            <label class="toggle-label inline-toggle"><input asp-for="Input.SmtpUseSsl" disabled="@Model.SmtpFixed" /> TLS/SSL verwenden</label>
             <div class="form-actions"><button class="button" type="submit" asp-page-handler="TestEmail">E-Mail testen</button></div>
         </section>
     </div>

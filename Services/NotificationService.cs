@@ -1,9 +1,9 @@
-using System.Net;
-using System.Net.Mail;
 using System.Net.Http.Json;
 using System.Text.Json;
+using MailKit.Net.Smtp;
 using MatBu.Models;
 using Microsoft.AspNetCore.DataProtection;
+using MimeKit;
 
 namespace MatBu.Services;
 
@@ -137,7 +137,8 @@ public static class NotificationSettingsRules
 
 public sealed record NotificationSendResult(bool Success, string Message);
 
-public sealed class NotificationService(IHttpClientFactory httpClientFactory)
+/// <summary>Sends the notifications: webhooks, and e-mail through the server <see cref="MailServer"/> chooses (MatSMTP when Mattiverse provides it, else MatBu's own).</summary>
+public sealed class NotificationService(IHttpClientFactory httpClientFactory, MailServer mailServer)
 {
     public async Task<NotificationSendResult> SendWebhookTestAsync(NotificationSettings settings, CancellationToken cancellationToken) =>
         await SendWebhookAsync(settings, new
@@ -177,24 +178,23 @@ public sealed class NotificationService(IHttpClientFactory httpClientFactory)
         catch (Exception exception) { return new(false, $"Webhook fehlgeschlagen: {exception.Message}"); }
     }
 
-    private static async Task<NotificationSendResult> SendEmailAsync(NotificationSettings settings, string subject, string body, CancellationToken cancellationToken)
+    private async Task<NotificationSendResult> SendEmailAsync(NotificationSettings settings, string subject, string body, CancellationToken cancellationToken)
     {
         var recipients = (settings.MailRecipients ?? "").Split([',', ';', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (string.IsNullOrWhiteSpace(settings.SmtpHost) || settings.SmtpPort is < 1 or > 65535 || string.IsNullOrWhiteSpace(settings.MailFrom) || recipients.Length == 0)
+        var server = mailServer.Compose(settings);
+        if (string.IsNullOrWhiteSpace(server.Host) || server.Port is < 1 or > 65535 || string.IsNullOrWhiteSpace(server.From) || recipients.Length == 0)
             return new(false, "SMTP-Host, Port, Absender und mindestens ein Empfänger sind erforderlich.");
         try
         {
-            using var message = new MailMessage { From = new MailAddress(settings.MailFrom), Subject = subject, Body = body };
-            foreach (var recipient in recipients) message.To.Add(new MailAddress(recipient));
-            using var client = new SmtpClient(settings.SmtpHost, settings.SmtpPort)
-            {
-                EnableSsl = settings.SmtpUseSsl,
-                Credentials = string.IsNullOrWhiteSpace(settings.SmtpUsername)
-                    ? CredentialCache.DefaultNetworkCredentials
-                    : new NetworkCredential(settings.SmtpUsername, settings.SmtpPassword)
-            };
-            await client.SendMailAsync(message, cancellationToken);
-            return new(true, $"Test-E-Mail an {recipients.Length} Empfänger gesendet.");
+            using var message = new MimeMessage { Subject = subject, Body = new TextPart("plain") { Text = body } };
+            message.From.Add(MailboxAddress.Parse(server.From));
+            foreach (var recipient in recipients) message.To.Add(MailboxAddress.Parse(recipient));
+            using var client = new SmtpClient();
+            await client.ConnectAsync(server.Host, server.Port, server.SocketOptions, cancellationToken);
+            if (server.Username is not null) await client.AuthenticateAsync(server.Username, server.Password ?? "", cancellationToken);
+            await client.SendAsync(message, cancellationToken);
+            await client.DisconnectAsync(true, cancellationToken);
+            return new(true, $"Test-E-Mail an {recipients.Length} Empfänger gesendet{(server.ThroughMatSmtp ? " (über MatSMTP)" : "")}.");
         }
         catch (Exception exception) { return new(false, $"E-Mail fehlgeschlagen: {exception.Message}"); }
     }
