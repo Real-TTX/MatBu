@@ -14,6 +14,13 @@ services:
       # MATIDENTITY_CLIENT_ID: "matbu"
       # MATIDENTITY_CLIENT_SECRET: ""
       # MATIDENTITY_INTERNAL_URL: ""       # http://matidentity:2300 inside Docker
+      # Mail through MatSMTP (all optional; Mattiverse sets them when MatSMTP is installed, then all mail goes there and the SMTP settings are fixed):
+      # MATSMTP_HOST: ""                   # mattiverse-matsmtp-matsmtp inside Docker; set = all mail through MatSMTP
+      # MATSMTP_PORT: "2025"
+      # MATSMTP_USERNAME: ""               # the relay user of MatBu in MatSMTP
+      # MATSMTP_PASSWORD: ""
+      # MATSMTP_FROM: ""                   # the sender of all mail, e.g. matbu@example.com
+      # MATSMTP_TLS: "none"                # none, starttls or tls
     volumes:
       - matbu-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro

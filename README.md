@@ -191,7 +191,7 @@ Der Endpunkt antwortet mit `200 Healthy`, wenn alle Objects erreichbar sind, kei
 
 ## Plattform-API
 
-MatBu erfüllt den Plattform-Vertrag der Mat-Apps (MatDesign `docs/PLATFORM.md`, Paket MatPlatform 1.2.0 als Kopie in `MatPlatform/`). Mattiverse und andere Apps können MatBu darüber anzeigen, überwachen, einrichten und bedienen, ohne MatBu zu kennen.
+MatBu erfüllt den Plattform-Vertrag der Mat-Apps (MatDesign `docs/PLATFORM.md`, Paket MatPlatform 1.3.0 als Kopie in `MatPlatform/`). Mattiverse und andere Apps können MatBu darüber anzeigen, überwachen, einrichten und bedienen, ohne MatBu zu kennen.
 
 | Endpunkt | Zweck | Zugang |
 | --- | --- | --- |
@@ -219,12 +219,20 @@ Ist `MATIDENTITY_AUTHORITY` gesetzt, leitet die Anmeldeseite direkt zu MatIdenti
 | `MATIDENTITY_CLIENT_ID` | `matbu` | Client von MatBu in MatIdentity (auch Audience der Tokens auf `/api`) |
 | `MATIDENTITY_CLIENT_SECRET` | leer | Secret dieses Clients |
 | `MATIDENTITY_INTERNAL_URL` | leer | optional: Adresse, unter der MatBu MatIdentity innerhalb von Docker erreicht (z. B. `http://matidentity:2300`) |
+| `MATSMTP_HOST` | leer (aus) | Adresse von MatSMTP, in Docker der Containername (`mattiverse-matsmtp-matsmtp`); gesetzt = alle E-Mails von MatBu gehen über MatSMTP (siehe „Benachrichtigungen“) |
+| `MATSMTP_PORT` | `2025` | SMTP-Port von MatSMTP |
+| `MATSMTP_USERNAME` | leer | Relay-Benutzer von MatBu in MatSMTP (SMTP AUTH); leer = ohne Anmeldung |
+| `MATSMTP_PASSWORD` | leer | Passwort dieses Benutzers (Secret) |
+| `MATSMTP_FROM` | leer | Absender aller E-Mails von MatBu, z. B. `matbu@example.com`; leer = der eigene Absender |
+| `MATSMTP_TLS` | `none` | `none`, `starttls` oder `tls` (TLS ab dem ersten Byte); im Docker-Netz genügt `none` |
 
 Keine dieser Variablen ist erforderlich. Secondaries und der Worker-Container brauchen sie nicht.
 
 ## Benachrichtigungen
 
 Unter **Benutzer → Benachrichtigungen** oder über das Glocken-Symbol können Administratoren Webhook- und SMTP-Benachrichtigungen konfigurieren und getrennt testen. MatBu kann erfolgreiche und fehlgeschlagene Backup- sowie Restore-Jobs melden. Webhooks erhalten JSON mit Job, Route, Größen, Ziel und Fehlerdetails. Zustellungen werden in SQLite protokolliert, bei Fehlern bis zu dreimal wiederholt und nach einem Container-Neustart nicht doppelt versendet. Das SMTP-Passwort wird verschlüsselt in `/data/notifications.json` gespeichert; die Data-Protection-Schlüssel liegen ebenfalls im persistenten Volume.
+
+**Mail über MatSMTP.** Installiert Mattiverse MatSMTP, setzt es die `MATSMTP_*`-Variablen (siehe Tabelle oben). Dann gehen alle E-Mails von MatBu (Job-Benachrichtigungen und Test-E-Mail) über MatSMTP, mit dessen Server, Port, Verschlüsselung, Relay-Benutzer und dem Absender `MATSMTP_FROM`. Auf der Seite **Benachrichtigungen** stehen die SMTP-Felder (Host, Port, Benutzer, Passwort, Absender, TLS) dann ausgegraut mit einem Satz, wohin die E-Mails gehen; das Passwort wird nie angezeigt. In `/api/configure` sind diese Felder `fixed: true`, eine Änderung beantwortet `PUT /api/configure` mit `400`. E-Mail an/aus, Empfänger und Ereignisse bleiben einstellbar. Die eigenen SMTP-Einstellungen bleiben gespeichert und gelten wieder, sobald die Variablen fehlen; ohne sie verhält sich MatBu wie bisher.
 
 ## Anwendungskonsistente Docker-Backups
 
