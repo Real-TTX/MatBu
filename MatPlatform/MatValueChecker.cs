@@ -1,4 +1,4 @@
-// MatPlatform 1.2.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.3.0 – a copy from MatDesign, do not edit here
 using System.Globalization;
 using System.Net.Mail;
 using System.Text.Json;
@@ -9,7 +9,7 @@ namespace MatPlatform;
 /// <summary>
 /// The checks of <c>PUT /api/configure</c> that the definition states (docs/PLATFORM.md): unknown keys, the type of each value, <c>required</c>,
 /// <c>min</c> / <c>max</c> (a number, or the length of a text), <c>pattern</c>, <c>options</c>, an address for <c>url</c> and <c>email</c>.
-/// A field hidden by <c>showIf</c> is not required. Messages are German or English.
+/// A field hidden by <c>showIf</c> is not required; a <c>fixed</c> field cannot be changed. Messages are German or English.
 /// </summary>
 public static class MatValueChecker
 {
@@ -47,6 +47,12 @@ public static class MatValueChecker
             if (!fields.TryGetValue(key, out var field))
             {
                 errors[key] = T("Diese Einstellung gibt es nicht.", "There is no such setting.");
+                continue;
+            }
+
+            if (field.Fixed == true)
+            {
+                errors[key] = T("Diese Einstellung ist von außen fest vorgegeben.", "This setting is fixed from outside the app.");
                 continue;
             }
 

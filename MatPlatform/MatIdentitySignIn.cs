@@ -1,4 +1,4 @@
-// MatPlatform 1.2.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.3.0 – a copy from MatDesign, do not edit here
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;

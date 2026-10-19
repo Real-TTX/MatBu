@@ -1,4 +1,4 @@
-// MatPlatform 1.2.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.3.0 – a copy from MatDesign, do not edit here
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -99,6 +99,12 @@ public sealed record MatField(string Key, string Label, string Type)
 
     /// <summary>The value takes effect after a restart.</summary>
     public bool? Restart { get; init; }
+
+    /// <summary>
+    /// The value is set from outside the app (the environment, for instance the <c>MATSMTP_*</c> variables of <see cref="MatSmtpSettings"/>): a consumer shows it but does not
+    /// offer to change it, and <c>PUT /api/configure</c> refuses a change.
+    /// </summary>
+    public bool? Fixed { get; init; }
 
     /// <summary>A <see cref="ShowIf"/>: the field is shown only when every named field has the value given here.</summary>
     public static IReadOnlyDictionary<string, JsonElement> When(params (string Key, object? Value)[] conditions)
