@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using MatBu.Data;
 using MatBu.Models;
 using MatPlatform;
@@ -13,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.IdentityModel.Tokens;
 
 namespace MatBu.Tests.Platform;
 
@@ -25,6 +27,9 @@ namespace MatBu.Tests.Platform;
 public class MatBuFactory : WebApplicationFactory<Program>
 {
     public const string ApiKey = "test-key-0123456789";
+
+    /// <summary>The key MatIdentity signs with in the tests (logout tokens); it is in the keys of the fixed OpenID configuration.</summary>
+    public static readonly SigningCredentials IdentityCredentials = new(new RsaSecurityKey(RSA.Create(2048)) { KeyId = "test-key" }, SecurityAlgorithms.RsaSha256);
 
     private readonly string _data = Path.Combine(Path.GetTempPath(), "matbu-tests-" + Guid.NewGuid().ToString("N"));
     private readonly string? _authority;
@@ -83,6 +88,7 @@ public class MatBuFactory : WebApplicationFactory<Program>
                     TokenEndpoint = _authority + "/connect/token",
                     EndSessionEndpoint = _authority + "/connect/logout",
                 };
+                configuration.SigningKeys.Add(IdentityCredentials.Key);
 
                 services.PostConfigure<OpenIdConnectOptions>(MatIdentitySignIn.Scheme, options =>
                 {

@@ -10,8 +10,10 @@ namespace MatBu.Platform;
 /// MatBu's own session cookie, like a local sign-in, keeping the ID token with the session for the sign-out at MatIdentity. A not yet linked user
 /// whose name is the e-mail address is not entered: the answer is <see cref="MatIdentitySignInResult.LinkRequired"/>, the person signs in once with
 /// that user's password on <c>/Login?local=1&amp;link=1</c> and the login page links it (<see cref="UserAccountService.LinkExternal"/>).
+/// The back-channel logout of MatIdentity (<see cref="IMatIdentitySessions"/>, <c>POST /signout-backchannel</c>) deletes the sessions it names
+/// (<see cref="UserAccountService.EndExternalSessions"/>), so the next request with such a cookie is signed out.
 /// </summary>
-public sealed class MatBuIdentityUsers(UserAccountService accounts, ILogger<MatBuIdentityUsers> logger) : IMatIdentityUsers
+public sealed class MatBuIdentityUsers(UserAccountService accounts, ILogger<MatBuIdentityUsers> logger) : IMatIdentityUsers, IMatIdentitySessions
 {
     public Task<MatIdentitySignInResult> SignInAsync(MatIdentityPerson person, HttpContext http, CancellationToken ct)
     {
@@ -27,7 +29,7 @@ public sealed class MatBuIdentityUsers(UserAccountService accounts, ILogger<MatB
         }
 
         var user = result.User!;
-        var token = accounts.CreateSession(user.Id, person.IdToken);
+        var token = accounts.CreateSession(user.Id, person.IdToken, person.SessionId);
 
         // Lax, not Strict like the local sign-in: this response ends a cross-site redirect chain (MatIdentity → /signin-oidc → the page),
         // and a Strict cookie would not be sent on the next step, so the page would send the browser back to MatIdentity.
@@ -41,5 +43,12 @@ public sealed class MatBuIdentityUsers(UserAccountService accounts, ILogger<MatB
 
         logger.LogInformation("{UserName} ({Role}) signed in through MatIdentity", user.UserName, user.Role);
         return Task.FromResult(MatIdentitySignInResult.Success());
+    }
+
+    /// <inheritdoc />
+    public Task EndSessionsAsync(string? subject, string? sessionId, CancellationToken ct)
+    {
+        accounts.EndExternalSessions(subject, sessionId);
+        return Task.CompletedTask;
     }
 }

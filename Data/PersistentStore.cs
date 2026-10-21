@@ -100,6 +100,7 @@ public sealed class PersistentStore
         try { db.Database.ExecuteSqlRaw("ALTER TABLE TransferJob ADD COLUMN ConsistencyTimeoutSeconds INTEGER NOT NULL DEFAULT 60"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE \"User\" ADD COLUMN ExternalSubject TEXT NULL"); } catch (SqliteException) { }
         try { db.Database.ExecuteSqlRaw("ALTER TABLE UserSession ADD COLUMN IdToken TEXT NULL"); } catch (SqliteException) { }
+        try { db.Database.ExecuteSqlRaw("ALTER TABLE UserSession ADD COLUMN SessionId TEXT NULL"); } catch (SqliteException) { }
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS JobLabel (Id INTEGER NOT NULL CONSTRAINT PK_JobLabel PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL, Color TEXT NOT NULL, CreateDate TEXT NOT NULL, CreateUserId INTEGER NOT NULL, UpdateDate TEXT NOT NULL, UpdateUserId INTEGER NOT NULL)");
         db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS IX_JobLabel_Name ON JobLabel (Name COLLATE NOCASE)");
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS BackupTaskLabel (Id INTEGER NOT NULL CONSTRAINT PK_BackupTaskLabel PRIMARY KEY AUTOINCREMENT, BackupTaskId INTEGER NOT NULL, JobLabelId INTEGER NOT NULL, CreateDate TEXT NOT NULL, CreateUserId INTEGER NOT NULL, UpdateDate TEXT NOT NULL, UpdateUserId INTEGER NOT NULL)");

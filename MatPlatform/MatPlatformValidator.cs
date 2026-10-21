@@ -1,4 +1,4 @@
-// MatPlatform 1.3.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.4.0 – a copy from MatDesign, do not edit here
 using System.Text.Json;
 using System.Text.RegularExpressions;
 

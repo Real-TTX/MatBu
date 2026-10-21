@@ -271,6 +271,8 @@ public sealed class UserSession : AuditedEntity
     public DateTimeOffset ExpiresDate { get; set; }
     /// <summary>The ID token of a sign-in through MatIdentity (the id_token_hint of the sign-out there); null for a local sign-in.</summary>
     public string? IdToken { get; set; }
+    /// <summary>The claim <c>sid</c> of a sign-in through MatIdentity (its session there): a back-channel logout that names it ends this session; else null.</summary>
+    public string? SessionId { get; set; }
 }
 
 public sealed class AppData

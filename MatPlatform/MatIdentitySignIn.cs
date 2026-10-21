@@ -1,14 +1,18 @@
-// MatPlatform 1.3.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.4.0 – a copy from MatDesign, do not edit here
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 
 namespace MatPlatform;
@@ -21,7 +25,14 @@ namespace MatPlatform;
 /// <param name="Role">The role claim (<see cref="MatIdentitySignInOptions.RoleClaim"/>): one of the app's roles when MatIdentity decides the role, null when the app does.</param>
 /// <param name="IdToken">The ID token; keep it with the local session, the sign-out at MatIdentity needs it (<see cref="MatIdentitySignIn.SignOutAtIdentity"/>).</param>
 /// <param name="Principal">All claims, for anything else.</param>
-public sealed record MatIdentityPerson(string Subject, string? Email, string? Name, string? PreferredUserName, string? Role, string? IdToken, ClaimsPrincipal Principal);
+public sealed record MatIdentityPerson(string Subject, string? Email, string? Name, string? PreferredUserName, string? Role, string? IdToken, ClaimsPrincipal Principal)
+{
+    /// <summary>
+    /// The claim <c>sid</c> of the ID token (1.4.0): the session at MatIdentity this sign-in belongs to. Keep it with the local session: a logout token
+    /// that names it ends only that session (<see cref="IMatIdentitySessions"/>). Null when MatIdentity sent none.
+    /// </summary>
+    public string? SessionId { get; init; }
+}
 
 /// <summary>What the app answers to a person MatIdentity signed in.</summary>
 public sealed record MatIdentitySignInResult(bool Succeeded, string? Error = null)
@@ -58,6 +69,22 @@ public interface IMatIdentityUsers
     Task<MatIdentitySignInResult> SignInAsync(MatIdentityPerson person, HttpContext http, CancellationToken ct);
 }
 
+/// <summary>
+/// Optional (1.4.0): the app ends its sessions when MatIdentity says a person signed out (OpenID Connect Back-Channel Logout,
+/// <c>POST /signout-backchannel</c>, <see cref="MatIdentityLogoutToken"/>). Implement it on the class of <see cref="IMatIdentityUsers"/>
+/// (<c>AddMatIdentitySignIn</c> registers it then) or register it yourself. Without it the endpoint answers <c>501</c> and a local session lasts until it expires.
+/// </summary>
+public interface IMatIdentitySessions
+{
+    /// <summary>
+    /// Called once the logout token has been checked. <paramref name="sessionId"/> set: end the local session(s) started with that <c>sid</c>
+    /// (<see cref="MatIdentityPerson.SessionId"/>); an app that keeps no sid ends every session of <paramref name="subject"/> instead. Only
+    /// <paramref name="subject"/> (the person was signed out everywhere): end every session of the local user linked to it. A subject or sid the app
+    /// does not know is no error (there is nothing to end). An exception answers <c>400</c>, and MatIdentity tries once more.
+    /// </summary>
+    Task EndSessionsAsync(string? subject, string? sessionId, CancellationToken ct);
+}
+
 /// <summary>How the sign-in through MatIdentity fits into the app: its cookie scheme and its pages.</summary>
 public sealed class MatIdentitySignInOptions
 {
@@ -82,6 +109,12 @@ public sealed class MatIdentitySignInOptions
     /// <summary>Where a person ends whom <see cref="IMatIdentityUsers"/> refused.</summary>
     public string AccessDeniedPath { get; set; } = "/AccessDenied";
 
+    /// <summary>The path of the back-channel logout (<c>POST</c>, form field <c>logout_token</c>; mapped by <c>MapMatPlatform</c> when MatIdentity is on).</summary>
+    public string BackchannelLogoutPath { get; set; } = MatIdentitySignIn.BackchannelLogoutPath;
+
+    /// <summary>How old a logout token may be (its <c>iat</c>); its <c>jti</c> is remembered against a replay for as long (plus the clock skew).</summary>
+    public TimeSpan LogoutTokenMaxAge { get; set; } = TimeSpan.FromMinutes(5);
+
     /// <summary>The claim that carries the role of the person in this app.</summary>
     public string RoleClaim { get; set; } = "role";
 
@@ -94,7 +127,15 @@ public sealed class MatIdentitySignInOptions
     /// </summary>
     public bool TrustForwardedProto { get; set; } = true;
 
-    internal string SignedOutTarget => SignedOutRedirect ?? LoginPath + "?signedOut=1";
+    /// <summary>Set by <c>AddMatIdentitySignIn</c>: MatIdentity is on, and the client id the logout tokens are for.</summary>
+    internal bool IdentityEnabled { get; set; }
+
+    internal string ClientId { get; set; } = string.Empty;
+
+    /// <summary>The back-channel logout is mapped already (<c>MapMatIdentityBackchannelLogout</c> maps it once).</summary>
+    internal bool BackchannelLogoutMapped { get; set; }
+
+    internal string SignedOutTarget =>SignedOutRedirect ?? LoginPath + "?signedOut=1";
 
     internal string FailedTarget => FailedRedirect ?? LoginPath + "?local=1&ssoError=1";
 
@@ -116,6 +157,9 @@ public static class MatIdentitySignIn
 
     public const string SignedOutCallbackPath = "/signout-callback-oidc";
 
+    /// <summary>The default path of the back-channel logout (<see cref="MatIdentitySignInOptions.BackchannelLogoutPath"/>).</summary>
+    public const string BackchannelLogoutPath = "/signout-backchannel";
+
     private const string IdTokenHintProperty = "matplatform:id_token_hint";
 
     /// <summary>Where the ID token of the current callback is kept between token validation and the local sign-in.</summary>
@@ -133,10 +177,19 @@ public static class MatIdentitySignIn
 
         var signIn = new MatIdentitySignInOptions();
         configure?.Invoke(signIn);
+        signIn.IdentityEnabled = settings.IdentityEnabled;
+        signIn.ClientId = settings.ClientId;
         builder.Services.AddSingleton(signIn);
         // The pending link (MatIdentityPendingLink) is protected with the app's keys.
         builder.Services.AddDataProtection();
         builder.Services.AddScoped<IMatIdentityUsers, TUsers>();
+        if (typeof(IMatIdentitySessions).IsAssignableFrom(typeof(TUsers)))
+        {
+            // The same class ends the sessions; an app that registered its own IMatIdentitySessions keeps it.
+            builder.Services.TryAddScoped(sp => (IMatIdentitySessions)sp.GetRequiredService<IMatIdentityUsers>());
+        }
+
+        builder.Services.TryAddSingleton<MatIdentityLogoutReplayCache>();
 
         if (!settings.IdentityEnabled)
         {
@@ -254,6 +307,78 @@ public static class MatIdentitySignIn
         return new SignOutResult([Scheme], properties);
     }
 
+    /// <summary>
+    /// Maps the back-channel logout (OpenID Connect Back-Channel Logout 1.0): <c>POST</c> <see cref="MatIdentitySignInOptions.BackchannelLogoutPath"/>
+    /// with the form field <c>logout_token</c>, anonymous (MatIdentity calls it server to server), without anti-forgery. Only when the sign-in through
+    /// MatIdentity is on (else nothing is mapped: 404); <c>MapMatPlatform</c> calls it, a second call maps nothing. The token is checked by
+    /// <see cref="MatIdentityLogoutToken.ValidateAsync"/> and handed to the app's <see cref="IMatIdentitySessions"/>: <c>200</c>; a token that is not
+    /// valid, or an app that failed to end the sessions: <c>400</c> (<c>{"error": "invalid_request", "error_description": ...}</c>); an app without
+    /// <see cref="IMatIdentitySessions"/>: <c>501</c>. Every answer has <c>Cache-Control: no-store</c>. Returns null when nothing was mapped.
+    /// </summary>
+    public static IEndpointConventionBuilder? MapMatIdentityBackchannelLogout(this IEndpointRouteBuilder app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        var signIn = app.ServiceProvider.GetService<MatIdentitySignInOptions>();
+        if (signIn is null || !signIn.IdentityEnabled || signIn.BackchannelLogoutMapped)
+        {
+            return null;
+        }
+
+        signIn.BackchannelLogoutMapped = true;
+        return app.MapPost(signIn.BackchannelLogoutPath, (Func<HttpContext, Task<IResult>>)BackchannelLogoutAsync).AllowAnonymous().DisableAntiforgery();
+    }
+
+    /// <summary>What <see cref="MapMatIdentityBackchannelLogout"/> answers.</summary>
+    private static async Task<IResult> BackchannelLogoutAsync(HttpContext http)
+    {
+        var ct = http.RequestAborted;
+        http.Response.Headers.CacheControl = "no-store";
+        http.Response.Headers.Pragma = "no-cache";
+
+        var sessions = http.RequestServices.GetService<IMatIdentitySessions>();
+        if (sessions is null)
+        {
+            Logger(http).LogWarning("MatIdentity sent a back-channel logout, but the app does not implement IMatIdentitySessions");
+            return Results.StatusCode(StatusCodes.Status501NotImplemented);
+        }
+
+        string? token = null;
+        if (http.Request.HasFormContentType)
+        {
+            var form = await http.Request.ReadFormAsync(ct);
+            token = form["logout_token"].ToString();
+        }
+
+        var signIn = http.RequestServices.GetRequiredService<MatIdentitySignInOptions>();
+        var oidc = http.RequestServices.GetRequiredService<IOptionsMonitor<OpenIdConnectOptions>>().Get(Scheme);
+        var replay = http.RequestServices.GetRequiredService<MatIdentityLogoutReplayCache>();
+        var now = (http.RequestServices.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();
+
+        var check = await MatIdentityLogoutToken.ValidateAsync(token, oidc, signIn.ClientId, signIn.LogoutTokenMaxAge, replay, now, ct);
+        if (check.Token is not { } logout)
+        {
+            Logger(http).LogWarning("Back-channel logout refused: {Reason}", check.Error);
+            return Invalid(check.Error!);
+        }
+
+        try
+        {
+            await sessions.EndSessionsAsync(logout.Subject, logout.SessionId, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Logger(http).LogError(ex, "The app could not end the sessions of {Subject} (sid {SessionId})", logout.Subject, logout.SessionId);
+            return Invalid("The sessions could not be ended.");
+        }
+
+        Logger(http).LogInformation("MatIdentity ended the sessions of {Subject} (sid {SessionId})", logout.Subject, logout.SessionId);
+        return Results.Ok();
+
+        static IResult Invalid(string description)
+            => Results.Json(new Dictionary<string, string> { ["error"] = "invalid_request", ["error_description"] = description }, statusCode: StatusCodes.Status400BadRequest);
+    }
+
     /// <summary>The rewriting handler for <c>MATIDENTITY_INTERNAL_URL</c>, or null without it.</summary>
     private static MatIdentityBackchannelHandler? Backchannel(MatPlatformSettings settings)
         => settings.InternalUrl is null
@@ -275,7 +400,10 @@ public static class MatIdentitySignIn
             Claim("preferred_username"),
             Claim(signIn.RoleClaim),
             context.Properties?.GetTokenValue("id_token") ?? http.Items[IdTokenItem] as string,
-            principal);
+            principal)
+        {
+            SessionId = Claim("sid"),
+        };
 
         var target = await CompleteSignInAsync(http, person, context.ReturnUri);
         context.HandleResponse();

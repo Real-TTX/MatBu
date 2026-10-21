@@ -1,4 +1,4 @@
-// MatPlatform 1.3.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.4.0 – a copy from MatDesign, do not edit here
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
@@ -22,6 +22,9 @@ namespace MatPlatform;
 /// <param name="Account">The key of the local account that matched (the app's own id), the only account that may be linked.</param>
 public sealed record MatIdentityPendingLink(string Subject, string? Email, string? Name, string? PreferredUserName, string? Role, string? IdToken, string Account)
 {
+    /// <summary>The claim <c>sid</c> (1.4.0, <see cref="MatIdentityPerson.SessionId"/>): keep it with the session like the ID token.</summary>
+    public string? SessionId { get; init; }
+
     /// <summary>The name of the cookie.</summary>
     public const string CookieName = ".MatPlatform.PendingLink";
 
@@ -41,7 +44,10 @@ public sealed record MatIdentityPendingLink(string Subject, string? Email, strin
         ArgumentException.ThrowIfNullOrEmpty(person.Subject);
         ArgumentException.ThrowIfNullOrEmpty(account);
 
-        var link = new MatIdentityPendingLink(person.Subject, person.Email, person.Name, person.PreferredUserName, person.Role, person.IdToken, account);
+        var link = new MatIdentityPendingLink(person.Subject, person.Email, person.Name, person.PreferredUserName, person.Role, person.IdToken, account)
+        {
+            SessionId = person.SessionId,
+        };
         var value = Protector(http).Protect(JsonSerializer.Serialize(link, Json), Lifetime);
         http.Response.Cookies.Append(CookieName, value, Options(http, DateTimeOffset.UtcNow.Add(Lifetime)));
     }

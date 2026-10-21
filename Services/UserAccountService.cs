@@ -147,7 +147,10 @@ public sealed class UserAccountService(PersistentStore store, ILogger<UserAccoun
     }
 
     /// <summary>Starts a session of <paramref name="userId"/> and answers its token (the value of <see cref="SessionCookie"/>).</summary>
-    public string CreateSession(long userId, string? idToken = null)
+    /// <param name="userId">The local user.</param>
+    /// <param name="idToken">The ID token of a sign-in through MatIdentity (for the sign-out there), else null.</param>
+    /// <param name="sessionId">The claim <c>sid</c> of that sign-in (its session at MatIdentity, for the back-channel logout), else null.</param>
+    public string CreateSession(long userId, string? idToken = null, string? sessionId = null)
     {
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         store.Update(data =>
@@ -160,6 +163,7 @@ public sealed class UserAccountService(PersistentStore store, ILogger<UserAccoun
                 UserId = userId,
                 ExpiresDate = now.Add(SessionLifetime),
                 IdToken = string.IsNullOrEmpty(idToken) ? null : idToken,
+                SessionId = string.IsNullOrEmpty(sessionId) ? null : sessionId,
                 CreateDate = now,
                 UpdateDate = now
             });
@@ -178,6 +182,35 @@ public sealed class UserAccountService(PersistentStore store, ILogger<UserAccoun
     {
         if (string.IsNullOrWhiteSpace(sessionToken)) return;
         store.Update(data => data.UserSessions.RemoveAll(item => item.Token == sessionToken));
+    }
+
+    /// <summary>
+    /// Ends the sessions MatIdentity signed out (back-channel logout): with <paramref name="sessionId"/> the sessions started with that <c>sid</c>
+    /// (of the user linked to <paramref name="subject"/> when it is given), with <paramref name="subject"/> alone every session of the user linked
+    /// to it. The rows are deleted, so the next request with such a cookie is signed out. An unknown subject or sid ends nothing. Answers the count.
+    /// </summary>
+    public int EndExternalSessions(string? subject, string? sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(subject) && string.IsNullOrWhiteSpace(sessionId)) return 0;
+
+        var ended = 0;
+        string? userName = null;
+        store.Update(data =>
+        {
+            var user = string.IsNullOrWhiteSpace(subject) ? null : data.Users.FirstOrDefault(item => item.ExternalSubject == subject);
+            if (!string.IsNullOrWhiteSpace(subject) && user is null) return;
+            userName = user?.UserName;
+            ended = string.IsNullOrWhiteSpace(sessionId)
+                ? data.UserSessions.RemoveAll(item => item.UserId == user!.Id)
+                : data.UserSessions.RemoveAll(item => item.SessionId == sessionId && (user is null || item.UserId == user.Id));
+        });
+
+        if (ended > 0)
+            logger.LogInformation("MatIdentity signed out {UserName} ({Subject}, sid {SessionId}): {Count} session(s) ended", userName ?? "a user", subject, sessionId, ended);
+        else
+            logger.LogInformation("MatIdentity signed out {Subject} (sid {SessionId}): no session of MatBu to end", subject, sessionId);
+
+        return ended;
     }
 
     /// <summary>The one not yet linked user whose user name is <paramref name="email"/>, or null.</summary>

@@ -1,4 +1,4 @@
-// MatPlatform 1.3.0 – a copy from MatDesign, do not edit here
+// MatPlatform 1.4.0 – a copy from MatDesign, do not edit here
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.RateLimiting;
@@ -98,11 +98,14 @@ public static class MatPlatformEndpoints
 
     /// <summary>
     /// Maps the endpoints. <c>/api</c> and <c>/api/health</c> are anonymous (rate limited: call <c>app.UseRateLimiter()</c>); the rest needs the key or a token.
+    /// With the sign-in through MatIdentity on it also maps the back-channel logout (<see cref="MatIdentitySignIn.MapMatIdentityBackchannelLogout"/>).
     /// Returns the protected group <c>/api</c>, for the app's own <c>/api/provides/...</c>.
     /// </summary>
     public static RouteGroupBuilder MapMatPlatform(this IEndpointRouteBuilder app)
     {
         ArgumentNullException.ThrowIfNull(app);
+
+        app.MapMatIdentityBackchannelLogout();
 
         var json = MatApiDefinition.Json;
 

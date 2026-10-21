@@ -70,13 +70,18 @@ public class LoginModel(PersistentStore store, UserAccountService accounts, MatP
 
         // The password proves the account: a pending link of MatIdentity is completed for exactly the user that matched, and dropped for any other.
         string? idToken = null;
+        string? sessionId = null;
         if (MatIdentityPendingLink.TakeFor(HttpContext, user.Id.ToString(CultureInfo.InvariantCulture)) is { } link)
         {
             var linked = accounts.LinkExternal(user.Id, new ExternalIdentity(link.Subject, link.Email, link.Name, link.PreferredUserName, link.Role));
-            if (linked.Succeeded) idToken = link.IdToken;
+            if (linked.Succeeded)
+            {
+                idToken = link.IdToken;
+                sessionId = link.SessionId;
+            }
         }
 
-        var token = accounts.CreateSession(user.Id, idToken);
+        var token = accounts.CreateSession(user.Id, idToken, sessionId);
         Response.Cookies.Append(UserAccountService.SessionCookie, token, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict, Secure = Request.IsHttps, MaxAge = UserAccountService.SessionLifetime });
         return RedirectToPage("/Index");
     }
